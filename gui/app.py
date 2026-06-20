@@ -11,8 +11,6 @@ import os
 import subprocess
 import sys
 import wave
-import base64
-import hashlib
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
@@ -35,7 +33,6 @@ MESH_FILE = BASE_DIR / "FEM" / "mesh" / "guitar_3d.msh"
 FEM_FOM_JSON = BASE_DIR / "FEM" / "outputs" / "fem_3d_output.json"
 ROM_STK_JSON = BASE_DIR / "FEM" / "outputs" / "rom_stk_body.json"
 NOTE_CACHE_DIR = BASE_DIR / "audio" / "note_cache"
-RECENT_GUITAR_PREVIEW_DIR = BASE_DIR / "gui" / "recent_guitar_previews"
 
 SHAPES_CONFIG = BASE_DIR / "FEM" / "configs" / "rom_shapes.json"
 ROM_ROOT = BASE_DIR / "ROM"
@@ -98,17 +95,6 @@ TOP_Z_BAND_FRAC = 0.10
 HOLE_VIS_COLOR = "#0c0c0c"
 SHELL_VIS_TAGS = frozenset({1, 2, 3, 4})
 DEFAULT_STK_NOTE_HZ = 110.0
-RECENT_GUITAR_CAPACITY = 3
-RECENT_GUITAR_WOOD_COLORS = {
-    "spruce": ("#d8b16a", "#8a5a32"),
-    "cedar": ("#b96b3c", "#75412d"),
-    "maple": ("#e2c58b", "#9c7046"),
-    "rosewood": ("#7b3f2d", "#3b2019"),
-    "mahogany": ("#9c5638", "#4b2a1e"),
-    "ebony": ("#34302b", "#171513"),
-    "default": ("#c89555", "#5a3524"),
-}
-
 FIXTURE_PRESETS = (
     "Standing Angled (3D)",
     "Standing Upright (Front)",
@@ -215,8 +201,6 @@ def _init_session() -> None:
         "_studio_handshake_id": "",
         "_studio_iframe_payload_fp": "",
         "_studio_iframe_initial": None,
-        "_forced_studio_payload_fp": "",
-        "_forced_studio_ignore_count": 0,
         "_studio_param_change_fp": "",
         "note_cache_ready_fp": "",
         "note_cache_building": False,
@@ -236,10 +220,6 @@ def _init_session() -> None:
         "active_stk_player_key": "",
         "active_stk_player_payload": {},
         "active_stk_player_validation": {},
-        "active_recent_guitar_record": {},
-        "recent_guitars": [],
-        "recent_guitar_preview_image_path": "",
-        "recent_guitar_preview_source": "",
         "stk_generate_intent_hash": "",
         "stk_render_requested": False,
         "stk_render_requested_hash": "",
@@ -481,12 +461,6 @@ def studio_iframe_payload_fp(payload: Dict[str, Any]) -> str:
     """Fingerprint of props that should trigger a full iframe re-render."""
     subset = {k: payload.get(k) for k in STUDIO_ROM_PAYLOAD_KEYS}
     subset["has_templates"] = "templates" in payload
-    return json.dumps(subset, sort_keys=True, default=str)
-
-
-def studio_payload_geometry_fp(payload: Mapping[str, Any]) -> str:
-    clean = sanitize_studio_payload(dict(payload))
-    subset = {k: clean.get(k) for k in STUDIO_ROM_PAYLOAD_KEYS}
     return json.dumps(subset, sort_keys=True, default=str)
 
 
@@ -737,58 +711,6 @@ def geom_from_studio_event(event: Dict[str, Any]) -> Tuple[Dict[str, Any], str, 
     return geom, top_wood, back_wood
 
 
-def force_active_studio_payload(payload: Mapping[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any], str, str]:
-    """Replace active design-studio state and force the iframe props to refresh."""
-    clean = sanitize_studio_payload(dict(payload))
-    geom, top_wood, back_wood = geom_from_studio_event(clean)
-    st.session_state["_fast_preview_geom"] = clean
-    st.session_state["fast_preview_geom"] = clean
-    st.session_state["_geom"] = geom
-    st.session_state["_top_wood"] = top_wood
-    st.session_state["_back_wood"] = back_wood
-    st.session_state["_studio_iframe_payload_fp"] = ""
-    st.session_state["_studio_iframe_initial"] = None
-    st.session_state["_studio_event_id"] = ""
-    st.session_state["_forced_studio_payload_fp"] = studio_payload_geometry_fp(clean)
-    st.session_state["_forced_studio_ignore_count"] = 2
-    return clean, geom, top_wood, back_wood
-
-
-def persist_recent_guitar_preview_image(
-    event: Mapping[str, Any],
-    *,
-    geom: Mapping[str, Any],
-    top_wood: str,
-    back_wood: str,
-) -> Optional[Path]:
-    """Persist a fast-preview canvas data URL for Recent Guitar cards."""
-    data_url = str(event.get("preview_image_data_url") or "")
-    prefix = "data:image/png;base64,"
-    if not data_url.startswith(prefix):
-        return None
-    try:
-        raw = base64.b64decode(data_url[len(prefix):], validate=True)
-    except (ValueError, TypeError):
-        return None
-    if not raw:
-        return None
-    fingerprint_payload = {
-        **dict(geom),
-        "top_wood_id": top_wood,
-        "back_wood_id": back_wood,
-    }
-    preview_id = hashlib.sha256(
-        json.dumps(fingerprint_payload, sort_keys=True, default=str).encode("utf-8")
-    ).hexdigest()[:16]
-    RECENT_GUITAR_PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
-    path = RECENT_GUITAR_PREVIEW_DIR / f"recent_guitar_{preview_id}.png"
-    try:
-        path.write_bytes(raw)
-    except OSError:
-        return None
-    return path
-
-
 def process_fast_preview_event(
     event: Optional[Dict[str, Any]],
     *,
@@ -816,15 +738,6 @@ def process_fast_preview_event(
     st.session_state._studio_event_id = eid
 
     clean = sanitize_studio_payload(event)
-    forced_fp = str(st.session_state.get("_forced_studio_payload_fp") or "")
-    forced_ignore = int(st.session_state.get("_forced_studio_ignore_count") or 0)
-    if forced_fp and studio_payload_geometry_fp(clean) != forced_fp and forced_ignore > 0:
-        st.session_state["_forced_studio_ignore_count"] = forced_ignore - 1
-        return
-    if forced_fp and studio_payload_geometry_fp(clean) == forced_fp:
-        st.session_state["_forced_studio_payload_fp"] = ""
-        st.session_state["_forced_studio_ignore_count"] = 0
-
     geom, top_wood, back_wood = geom_from_studio_event(clean)
     st.session_state._fast_preview_geom = clean
     st.session_state._geom = geom
@@ -846,17 +759,6 @@ def process_fast_preview_event(
         pin_neck_fix=pin_neck,
         fixture_preset=fixture_preset,
     )
-    if action == "save_sync":
-        image_path = persist_recent_guitar_preview_image(
-            event,
-            geom=geom,
-            top_wood=top_wood,
-            back_wood=back_wood,
-        )
-        if image_path:
-            st.session_state["recent_guitar_preview_image_path"] = str(image_path)
-            st.session_state["recent_guitar_preview_source"] = str(event.get("preview_source") or "fast_preview_canvas")
-
     if action in ("save_sync", "run_rom", "run_fem"):
         st.session_state.mesh_is_dirty = True
         st.session_state.show_mesh_overlay = False
@@ -1391,9 +1293,6 @@ def invalidate_physics_state() -> None:
 
 def invalidate_rom_and_audio_state() -> None:
     """Mark ROM body response and synthesized audio stale (design changed)."""
-    current_active = st.session_state.get("active_recent_guitar_record") or {}
-    if current_active:
-        push_recent_guitar_fifo(current_active)
     st.session_state.physics_ready = False
     st.session_state.acoustics_pending = False
     st.session_state.rom_body_ready = False
@@ -1420,7 +1319,6 @@ def invalidate_rom_and_audio_state() -> None:
     st.session_state["active_stk_player_key"] = ""
     st.session_state["active_stk_player_payload"] = {}
     st.session_state["active_stk_player_validation"] = {}
-    st.session_state["active_recent_guitar_record"] = {}
     st.session_state["stk_generate_intent_hash"] = ""
     st.session_state["stk_render_requested"] = False
     st.session_state["stk_render_requested_hash"] = ""
@@ -1518,352 +1416,6 @@ def schedule_stk_note_library_after_rom(
     except Exception as exc:
         st.session_state["stk_job_status"] = "failed"
         st.session_state.rom_body_error = str(exc)
-
-
-def _recent_geom_metadata(geom: Mapping[str, Any], top_wood: str, back_wood: str) -> Dict[str, Any]:
-    return {
-        "top_wood": str(top_wood),
-        "back_wood": str(back_wood),
-        "length": float(geom.get("length") or 0.0),
-        "width": float(geom.get("width") or 0.0),
-        "depth": float(geom.get("depth") or 0.0),
-        "hole_radius": float(geom.get("hole_radius") or 0.0),
-    }
-
-
-def _recent_preview_clamp(value: float, lo: float, hi: float) -> float:
-    return max(lo, min(hi, float(value)))
-
-
-def _recent_wood_colors(top_wood: str, back_wood: str) -> Tuple[str, str]:
-    top_key = str(top_wood or "").strip().lower()
-    back_key = str(back_wood or "").strip().lower()
-    top_color = RECENT_GUITAR_WOOD_COLORS.get(top_key, RECENT_GUITAR_WOOD_COLORS["default"])[0]
-    back_color = RECENT_GUITAR_WOOD_COLORS.get(back_key, RECENT_GUITAR_WOOD_COLORS["default"])[1]
-    return top_color, back_color
-
-
-def build_recent_guitar_preview_svg(record_or_payload: Mapping[str, Any]) -> str:
-    """Build a deterministic mini classical guitar preview from saved design data."""
-    record = dict(record_or_payload)
-    meta = dict(record.get("metadata") or {})
-    if not meta:
-        payload = sanitize_studio_payload(dict(record.get("studio_payload") or record))
-        geom, top_wood, back_wood = geom_from_studio_event(payload)
-        meta = _recent_geom_metadata(geom, top_wood, back_wood)
-    top_color, back_color = _recent_wood_colors(
-        str(meta.get("top_wood") or ""),
-        str(meta.get("back_wood") or ""),
-    )
-    length = _recent_preview_clamp(float(meta.get("length") or 1.0), 0.6, 1.4)
-    width = _recent_preview_clamp(float(meta.get("width") or 0.36), 0.20, 0.60)
-    depth = _recent_preview_clamp(float(meta.get("depth") or 0.08), 0.04, 0.18)
-    hole = _recent_preview_clamp(float(meta.get("hole_radius") or 0.045), 0.018, 0.090)
-
-    body_w = _recent_preview_clamp(42.0 + (width - 0.30) * 120.0, 36.0, 64.0)
-    body_h = _recent_preview_clamp(52.0 + (length - 0.85) * 34.0, 46.0, 70.0)
-    waist_w = _recent_preview_clamp(body_w * (0.44 + depth * 1.2), body_w * 0.44, body_w * 0.66)
-    upper_w = body_w * 0.72
-    lower_w = body_w
-    soundhole_r = _recent_preview_clamp(hole * 135.0, 4.5, 11.0)
-    body_x = 74.0
-    body_y = 76.0
-    rosette = "#2f2119" if top_color != "#34302b" else "#d2b36f"
-    soundhole_y = body_y - body_h * 0.13
-
-    return f"""
-<svg viewBox="0 0 148 132" width="100%" height="124" role="img" aria-label="Recent classical guitar body preview"
-     xmlns="http://www.w3.org/2000/svg">
-  <rect x="0" y="0" width="148" height="132" rx="7" fill="rgba(255,255,255,0.035)"/>
-  <g transform="rotate(-5 74 76)">
-    <path d="M {body_x:.1f} {body_y - body_h / 2:.1f}
-             C {body_x - upper_w / 2:.1f} {body_y - body_h / 2 + 5:.1f},
-               {body_x - waist_w / 2:.1f} {body_y - 4:.1f},
-               {body_x - lower_w / 2:.1f} {body_y + body_h / 5:.1f}
-             C {body_x - lower_w / 2:.1f} {body_y + body_h / 2:.1f},
-               {body_x - lower_w / 5:.1f} {body_y + body_h / 2 + 3:.1f},
-               {body_x:.1f} {body_y + body_h / 2:.1f}
-             C {body_x + lower_w / 5:.1f} {body_y + body_h / 2 + 3:.1f},
-               {body_x + lower_w / 2:.1f} {body_y + body_h / 2:.1f},
-               {body_x + lower_w / 2:.1f} {body_y + body_h / 5:.1f}
-             C {body_x + waist_w / 2:.1f} {body_y - 4:.1f},
-               {body_x + upper_w / 2:.1f} {body_y - body_h / 2 + 5:.1f},
-               {body_x:.1f} {body_y - body_h / 2:.1f} Z"
-          fill="{top_color}" stroke="{back_color}" stroke-width="4"/>
-    <path d="M {body_x - body_w * 0.25:.1f} {body_y - body_h * 0.33:.1f}
-             C {body_x - body_w * 0.06:.1f} {body_y - body_h * 0.43:.1f},
-               {body_x + body_w * 0.06:.1f} {body_y - body_h * 0.43:.1f},
-               {body_x + body_w * 0.25:.1f} {body_y - body_h * 0.33:.1f}"
-          fill="none" stroke="rgba(255,255,255,0.22)" stroke-width="1.1"/>
-    <ellipse cx="{body_x:.1f}" cy="{soundhole_y:.1f}" rx="{soundhole_r + 2.3:.1f}" ry="{soundhole_r + 2.3:.1f}"
-             fill="none" stroke="{rosette}" stroke-width="2"/>
-    <circle cx="{body_x:.1f}" cy="{soundhole_y:.1f}" r="{soundhole_r:.1f}" fill="#17110d"/>
-  </g>
-</svg>""".strip()
-
-
-def build_recent_guitar_record(
-    *,
-    parameter_hash: str,
-    cache_dir: str,
-    geom: Mapping[str, Any],
-    top_wood: str,
-    back_wood: str,
-    saved_guitar_id: str = "",
-    player_fingerprint: str = "",
-    preview_image_path: str = "",
-    preview_source: str = "",
-    studio_payload: Optional[Mapping[str, Any]] = None,
-) -> Dict[str, Any]:
-    """Session-only recent guitar record; references an already-ready STK cache."""
-    full_payload = sanitize_studio_payload(
-        dict(
-            studio_payload
-            or {
-                **dict(geom),
-                "shape_type": CLASSIC_SHAPE_LABEL,
-                "top_wood_id": str(top_wood),
-                "back_wood_id": str(back_wood),
-            }
-        )
-    )
-    full_geom, full_top, full_back = geom_from_studio_event(full_payload)
-    meta = _recent_geom_metadata(full_geom, full_top, full_back)
-    return {
-        "parameter_hash": str(parameter_hash),
-        "sample_id": "sample_000",
-        "cache_dir": str(cache_dir),
-        "saved_guitar_id": str(saved_guitar_id),
-        "player_fingerprint": str(player_fingerprint),
-        "metadata": meta,
-        "studio_payload": full_payload,
-        "label": f"{str(full_top).title()} / {str(full_back).title()}",
-        "short_id": str(parameter_hash)[:8],
-        "preview_image_path": str(preview_image_path),
-        "preview_source": str(preview_source or "synthetic_svg_fallback"),
-        "preview_svg": build_recent_guitar_preview_svg({"metadata": meta}),
-    }
-
-
-def recent_preview_image_path(record: Mapping[str, Any]) -> Optional[Path]:
-    path = Path(str(record.get("preview_image_path") or ""))
-    return path if path.is_file() else None
-
-
-def recent_record_is_playable(record: Mapping[str, Any]) -> bool:
-    cache = Path(str(record.get("cache_dir") or ""))
-    if not record.get("parameter_hash") or not cache.is_dir():
-        return False
-    try:
-        from stk_app_audio_service import (  # noqa: WPS433
-            preview_cache_dir_has_required_notes,
-        )
-
-        return preview_cache_dir_has_required_notes(cache)
-    except Exception:
-        return False
-
-
-def push_recent_guitar_fifo(record: Mapping[str, Any]) -> None:
-    """Push one playable previous guitar to session FIFO, deduped by hash/cache."""
-    if not recent_record_is_playable(record):
-        return
-    incoming = dict(record)
-    in_hash = str(incoming.get("parameter_hash") or "")
-    in_cache = str(incoming.get("cache_dir") or "")
-    recents = [
-        dict(r)
-        for r in (st.session_state.get("recent_guitars") or [])
-        if str(r.get("parameter_hash") or "") != in_hash
-        and str(r.get("cache_dir") or "") != in_cache
-    ]
-    recents.insert(0, incoming)
-    st.session_state["recent_guitars"] = recents[:RECENT_GUITAR_CAPACITY]
-
-
-def set_active_recent_record_from_current_design(
-    geom: Mapping[str, Any],
-    *,
-    top_wood: str,
-    back_wood: str,
-) -> None:
-    parameter_hash = str(st.session_state.get("active_stk_parameter_hash") or "")
-    cache_dir = str(st.session_state.get("active_stk_cache_path") or "")
-    payload = st.session_state.get("active_stk_player_payload") or {}
-    if not parameter_hash or not cache_dir or payload.get("status") != "ready":
-        return
-    st.session_state["active_recent_guitar_record"] = build_recent_guitar_record(
-        parameter_hash=parameter_hash,
-        cache_dir=cache_dir,
-        geom=geom,
-        top_wood=top_wood,
-        back_wood=back_wood,
-        saved_guitar_id=str(st.session_state.get("active_stk_guitar_id") or ""),
-        player_fingerprint=str(st.session_state.get("active_stk_player_fp") or ""),
-        preview_image_path=str(st.session_state.get("recent_guitar_preview_image_path") or ""),
-        preview_source=str(st.session_state.get("recent_guitar_preview_source") or ""),
-        studio_payload=st.session_state.get("_fast_preview_geom") or {
-            **dict(geom),
-            "shape_type": CLASSIC_SHAPE_LABEL,
-            "top_wood_id": top_wood,
-            "back_wood_id": back_wood,
-        },
-    )
-
-
-def apply_recent_record_to_design(
-    record: Mapping[str, Any],
-    *,
-    cache_playable: Optional[bool] = None,
-) -> None:
-    payload = sanitize_studio_payload(dict(record.get("studio_payload") or {}))
-    payload, geom, top_wood, back_wood = force_active_studio_payload(payload)
-    rom_fp = rom_mesh_fingerprint(geom, top_wood=top_wood, back_wood=back_wood)
-    playable = recent_record_is_playable(record) if cache_playable is None else bool(cache_playable)
-    st.session_state.rom_body_ready = True
-    st.session_state.rom_body_fingerprint = rom_fp
-    st.session_state.physics_ready = True
-    st.session_state.sound_stale = False
-    if ROM_STK_JSON.exists():
-        st.session_state.stk_body_json = str(ROM_STK_JSON)
-    st.session_state["recent_guitar_preview_image_path"] = str(record.get("preview_image_path") or "")
-    st.session_state["recent_guitar_preview_source"] = str(record.get("preview_source") or "")
-    st.session_state["stk_parameter_hash"] = str(record.get("parameter_hash") or "")
-    st.session_state["stk_job_status"] = "ready" if playable else "failed"
-    st.session_state["stk_preview_cache_ready"] = playable
-    st.session_state["stk_preview_cache_path"] = str(record.get("cache_dir") or "")
-    st.session_state["active_player_hash"] = str(record.get("parameter_hash") or "")
-    st.session_state["active_player_cache_dir"] = str(record.get("cache_dir") or "")
-    st.session_state["loaded_player_hash"] = str(record.get("parameter_hash") or "")
-    st.session_state["loaded_player_cache_dir"] = str(record.get("cache_dir") or "")
-    st.session_state["show_clickable_guitar_requested"] = playable
-    st.session_state["stk_render_requested"] = False
-    st.session_state["stk_render_requested_hash"] = ""
-    st.session_state["stk_generate_intent_hash"] = ""
-
-
-def restore_recent_display_mesh(record: Mapping[str, Any]) -> None:
-    """Refresh the displayed Gmsh mesh for a loaded Recent Guitar without touching STK."""
-    payload = sanitize_studio_payload(dict(record.get("studio_payload") or {}))
-    geom, top_wood, back_wood = geom_from_studio_event(payload)
-    geom_fp = geometry_fingerprint(
-        geom,
-        top_wood,
-        back_wood,
-        clamp_ribs=DEFAULT_CLAMP_RIBS,
-        pin_neck_fix=DEFAULT_PIN_NECK_FIX,
-        fixture_preset=DEFAULT_FIXTURE_PRESET,
-    )
-    st.session_state.mesh_is_dirty = True
-    st.session_state.show_mesh_overlay = False
-    regenerate_display_mesh(
-        geom,
-        top_wood=top_wood,
-        back_wood=back_wood,
-        clamp_ribs=DEFAULT_CLAMP_RIBS,
-        pin_neck_fix=DEFAULT_PIN_NECK_FIX,
-        fixture_preset=DEFAULT_FIXTURE_PRESET,
-        geom_fp=geom_fp,
-    )
-    st.session_state.mesh_is_dirty = False
-    st.session_state.show_mesh_overlay = True
-    st.session_state._mesh_overlay_rom_fp = rom_mesh_fingerprint(
-        geom,
-        top_wood=top_wood,
-        back_wood=back_wood,
-    )
-
-
-def load_recent_guitar_at_index(index: int) -> None:
-    recents = [dict(r) for r in (st.session_state.get("recent_guitars") or [])]
-    if index < 0 or index >= len(recents):
-        return
-    selected = recents.pop(index)
-    current = st.session_state.get("active_recent_guitar_record") or {}
-    if current:
-        current_hash = str(current.get("parameter_hash") or "")
-        current_cache = str(current.get("cache_dir") or "")
-        recents = [
-            r for r in recents
-            if str(r.get("parameter_hash") or "") != current_hash
-            and str(r.get("cache_dir") or "") != current_cache
-        ]
-        recents.insert(0, dict(current))
-    st.session_state["recent_guitars"] = recents[:RECENT_GUITAR_CAPACITY]
-    try:
-        from stk_app_audio_service import activate_stk_guitar_for_player  # noqa: WPS433
-        from stk_app_ui import apply_stk_activation_to_session  # noqa: WPS433
-
-        restore_recent_display_mesh(selected)
-        cache_playable = recent_record_is_playable(selected)
-        apply_recent_record_to_design(selected, cache_playable=cache_playable)
-        if not cache_playable:
-            st.session_state["active_recent_guitar_record"] = selected
-            st.warning("Recent guitar cache is incomplete. Save & Sync again before playing it.")
-            return
-        activation = activate_stk_guitar_for_player(
-            cache_dir=Path(str(selected.get("cache_dir") or "")),
-            parameter_hash=str(selected.get("parameter_hash") or ""),
-            saved_guitar_id=str(selected.get("saved_guitar_id") or ""),
-        )
-        validation = dict(activation.get("validation") or {})
-        payload = dict(activation.get("player_payload") or {})
-        if not validation.get("ok") or payload.get("status") != "ready" or not payload.get("positions"):
-            st.session_state["show_clickable_guitar_requested"] = False
-            st.session_state["active_recent_guitar_record"] = selected
-            st.warning("Recent guitar player cache is incomplete. Save & Sync again before playing it.")
-            return
-        apply_stk_activation_to_session(activation)
-        st.session_state["show_clickable_guitar_requested"] = True
-        st.session_state["stk_render_requested"] = False
-        st.session_state["stk_render_requested_hash"] = ""
-        st.session_state["stk_generate_intent_hash"] = ""
-        st.session_state["active_recent_guitar_record"] = selected
-    except Exception as exc:
-        st.warning(f"Could not load recent guitar: {exc}")
-
-
-def render_recent_guitars_panel() -> None:
-    recents = [dict(r) for r in (st.session_state.get("recent_guitars") or [])][:RECENT_GUITAR_CAPACITY]
-    st.markdown("##### Recent guitars")
-    cols = st.columns(RECENT_GUITAR_CAPACITY)
-    for idx, col in enumerate(cols):
-        with col:
-            if idx >= len(recents):
-                st.caption("Empty slot")
-                st.markdown(
-                    "<div style='height:96px;border:1px dashed rgba(255,255,255,.25);"
-                    "border-radius:6px;'></div>",
-                    unsafe_allow_html=True,
-                )
-                continue
-            rec = recents[idx]
-            meta = dict(rec.get("metadata") or {})
-            top = str(meta.get("top_wood") or "").title()
-            back = str(meta.get("back_wood") or "").title()
-            image_path = recent_preview_image_path(rec)
-            if image_path is not None:
-                st.image(str(image_path), use_container_width=True)
-            else:
-                preview_svg = str(rec.get("preview_svg") or build_recent_guitar_preview_svg(rec))
-                st.markdown(
-                    "<div style='height:160px;border:1px solid rgba(255,255,255,.18);"
-                    "border-radius:6px;padding:4px;background:rgba(255,255,255,.035);"
-                    "overflow:hidden;'>"
-                    f"{preview_svg}"
-                    "</div>",
-                    unsafe_allow_html=True,
-                )
-            st.caption(f"**{top}/{back}**")
-            length = float(meta.get("length") or 0)
-            width = float(meta.get("width") or 0)
-            depth = float(meta.get("depth") or 0)
-            hole = float(meta.get("hole_radius") or 0)
-            st.caption(f"L {length:.3f} / W {width:.3f} / D {depth:.3f}")
-            st.caption(f"Hole {hole:.3f} / `{rec.get('short_id')}`")
-            if st.button("Load", key=f"recent_guitar_load_{idx}_{rec.get('short_id')}", use_container_width=True):
-                load_recent_guitar_at_index(idx)
-                st.rerun()
 
 
 def website_stk_mode_alias() -> str:
@@ -2565,13 +2117,6 @@ def _render_main_studio(
         player_key = "guitar_player_idle"
 
     guitar_player(player=player_payload, key=player_key, height=560)
-    if _player_ready and player_payload.get("status") == "ready":
-        set_active_recent_record_from_current_design(
-            geom,
-            top_wood=top_wood,
-            back_wood=back_wood,
-        )
-    render_recent_guitars_panel()
 
     if st.session_state.get("developer_fom_mode"):
         from stk_app_ui import render_stk_diagnostics_panel  # noqa: WPS433

@@ -13,6 +13,7 @@ sys.path.insert(0, str(REPO / "gui"))
 
 from pgsm_stk_parameter_export import (  # noqa: E402
     CLASSIC_AUDIBLE_IDENTITY_CONTRAST,
+    CLASSIC_AUDIBLE_IDENTITY_CONTRAST_PRESETS,
     NOTE_SET,
     PYTHON_ROLE,
     RENDERER_TARGET,
@@ -113,14 +114,32 @@ class TestPgsmStkParameterExport(unittest.TestCase):
     def test_v4_classic_audible_identity_contrast_metadata(self) -> None:
         doc = build_parameter_export(repo_root=REPO, demo_version="v4_10_samples")
         self.assertGreater(CLASSIC_AUDIBLE_IDENTITY_CONTRAST, 0.0)
-        self.assertLessEqual(CLASSIC_AUDIBLE_IDENTITY_CONTRAST, 0.20)
+        self.assertEqual(CLASSIC_AUDIBLE_IDENTITY_CONTRAST_PRESETS["conservative"], CLASSIC_AUDIBLE_IDENTITY_CONTRAST)
+        self.assertEqual(CLASSIC_AUDIBLE_IDENTITY_CONTRAST_PRESETS["strong"], 0.25)
+        self.assertEqual(CLASSIC_AUDIBLE_IDENTITY_CONTRAST_PRESETS["aggressive"], 0.35)
         for row in doc["renders"]:
             cal = row.get("perceptual_calibration") or {}
             contrast = cal.get("classic_audible_identity_contrast") or {}
             self.assertTrue(contrast.get("enabled"))
+            self.assertEqual(contrast.get("preset"), "conservative")
             self.assertEqual(contrast.get("strength"), round(CLASSIC_AUDIBLE_IDENTITY_CONTRAST, 6))
             self.assertLess(row["string_body_mix"]["direct_string_gain"], 1.34)
             self.assertGreater(row["body_model"]["body_modal_gain"], 0.72)
+
+    def test_v4_aggressive_contrast_is_explicit_and_bounded(self) -> None:
+        doc = build_parameter_export(
+            repo_root=REPO,
+            demo_version="v4_10_samples",
+            classic_contrast_preset="aggressive",
+        )
+        for row in doc["renders"]:
+            contrast = (row.get("perceptual_calibration") or {}).get("classic_audible_identity_contrast") or {}
+            self.assertEqual(contrast.get("preset"), "aggressive")
+            self.assertEqual(contrast.get("strength"), 0.35)
+            self.assertGreaterEqual(row["string_body_mix"]["direct_string_gain"], 0.58)
+            self.assertLessEqual(row["string_body_mix"]["direct_string_gain"], 1.40)
+            self.assertGreaterEqual(row["body_model"]["body_modal_gain"], 0.70)
+            self.assertLessEqual(row["body_model"]["body_modal_gain"], 1.62)
 
     def test_samples_differ_physically(self) -> None:
         doc = build_parameter_export(repo_root=REPO)

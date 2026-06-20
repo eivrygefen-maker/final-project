@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from pgsm_stk_parameter_export import (
+    CLASSIC_AUDIBLE_IDENTITY_CONTRAST_PRESETS,
     DURATION_S,
     NUMERIC_SR,
     SAMPLE_SET_V4,
@@ -29,6 +30,7 @@ from pgsm_stk_parameter_export import (
     _extended_voicing,
     build_render_entry,
     load_physical_parameters,
+    resolve_classic_audible_identity_contrast,
 )
 from pgsm_emergency_guitar_demo_engine import compute_v5_physical_factors
 from pgsm_step5l_limited_multiguitar_differentiation import REFERENCE_SAMPLE_ID
@@ -399,7 +401,9 @@ def compute_cache_spec_hash(
     render_mode: str,
     durations_fp: str,
     parallel_workers: int = 1,
+    contrast_preset: str = "conservative",
 ) -> str:
+    preset_name, _ = resolve_classic_audible_identity_contrast(contrast_preset)
     payload = {
         "parameter_hash": parameter_hash,
         "renderer_version": ACCEPTED_STK_DEMO_VERSION,
@@ -409,6 +413,8 @@ def compute_cache_spec_hash(
         "required_notes": sorted({normalize_note_name(n) for n in required_notes}, key=note_to_midi),
         "durations_fingerprint": durations_fp,
     }
+    if preset_name != "conservative":
+        payload["classic_contrast_preset"] = preset_name
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
 
 
@@ -418,14 +424,21 @@ def build_cache_spec_for_hash(
     fret_count: int = 19,
     *,
     render_mode: str = "",
+    contrast_preset: str = "conservative",
 ) -> Dict[str, Any]:
     c = dict(cfg or load_app_stk_config())
     required = build_required_note_set_from_fretboard(fret_count)
     mode = str(render_mode or c.get("render_mode") or "batch")
     workers = parallel_workers_from_config(c) if mode == "parallel_batch" else 1
     durations_fp = durations_fingerprint(required, c)
+    preset_name, preset_strength = resolve_classic_audible_identity_contrast(contrast_preset)
     spec_hash = compute_cache_spec_hash(
-        parameter_hash, required, render_mode=mode, durations_fp=durations_fp, parallel_workers=workers
+        parameter_hash,
+        required,
+        render_mode=mode,
+        durations_fp=durations_fp,
+        parallel_workers=workers,
+        contrast_preset=preset_name,
     )
     return {
         "cache_spec_hash": spec_hash,
@@ -434,6 +447,8 @@ def build_cache_spec_for_hash(
         "note_cache_version": NOTE_CACHE_VERSION,
         "render_mode": mode,
         "parallel_workers": workers,
+        "classic_contrast_preset": preset_name,
+        "classic_contrast_strength": preset_strength,
         "required_notes": required,
         "durations_fingerprint": durations_fp,
         "fretboard_required_note_count": len(required),
@@ -807,6 +822,7 @@ def _build_single_note_export(
     render_subdir: str,
     stk_wav_relpath: str,
     instrument: str = "classical",
+    contrast_preset: str = "conservative",
 ) -> Dict[str, Any]:
     ref_id = reference_sample_id_for(sample_id)
     physical = load_physical_parameters(sample_id)
@@ -827,6 +843,7 @@ def _build_single_note_export(
         repo_root=repo_root,
         demo_version=ACCEPTED_STK_DEMO_VERSION,
         perceptual_mix=mix_scales,
+        classic_contrast_preset=contrast_preset,
         frequency_hz=freq,
         output_wav_relpath=stk_wav_relpath,
     )
@@ -839,6 +856,7 @@ def _build_single_note_export(
         "demo_version": "app_stk_note_cache_classical",
         "instrument": "classical",
         "shape_type": shape_label,
+        "classic_contrast_preset": resolve_classic_audible_identity_contrast(contrast_preset)[0],
         "generated_at": _utc_now(),
         "renderer": "stk_cpp",
         "python_role": "parameter_export_only",
@@ -862,6 +880,7 @@ def _build_batch_note_export(
     durations_by_note: Mapping[str, float],
     render_subdir: str,
     instrument: str = "classical",
+    contrast_preset: str = "conservative",
 ) -> Dict[str, Any]:
     ref_id = reference_sample_id_for(sample_id)
     physical = load_physical_parameters(sample_id)
@@ -888,6 +907,7 @@ def _build_batch_note_export(
             repo_root=repo_root,
             demo_version=ACCEPTED_STK_DEMO_VERSION,
             perceptual_mix=mix_scales,
+            classic_contrast_preset=contrast_preset,
             frequency_hz=freq,
             output_wav_relpath=stk_rel,
         )
@@ -900,6 +920,7 @@ def _build_batch_note_export(
         "demo_version": "app_stk_note_cache_classical",
         "instrument": "classical",
         "shape_type": shape_label,
+        "classic_contrast_preset": resolve_classic_audible_identity_contrast(contrast_preset)[0],
         "generated_at": _utc_now(),
         "renderer": "stk_cpp",
         "python_role": "parameter_export_only",
@@ -954,6 +975,7 @@ def render_notes_batch(
     binary: Optional[Path] = None,
     cache_key: str = "",
     instrument: str = "classical",
+    contrast_preset: str = "conservative",
 ) -> float:
     """Render all notes in one STK/C++ invocation."""
     if not notes_to_render:
@@ -973,6 +995,7 @@ def render_notes_batch(
         durations_by_note=durations_by_note,
         render_subdir=rel_subdir,
         instrument=instrument,
+        contrast_preset=contrast_preset,
     )
     params_path = tmp_dir / "params.json"
     params_path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
@@ -998,6 +1021,7 @@ def render_notes_batch_to_worker_dir(
     worker_dir: Path,
     binary: Optional[Path] = None,
     instrument: str = "classical",
+    contrast_preset: str = "conservative",
 ) -> Tuple[float, int]:
     """Render a worker chunk into an isolated temp dir (flat ``{note}.wav`` files)."""
     if not notes_to_render:
@@ -1018,6 +1042,7 @@ def render_notes_batch_to_worker_dir(
         durations_by_note=durations_by_note,
         render_subdir=rel_subdir,
         instrument=instrument,
+        contrast_preset=contrast_preset,
     )
     params_path = stk_work / "params.json"
     params_path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
@@ -1080,6 +1105,7 @@ def finalize_parallel_staging_cache(
     parameter_hash: str,
     cfg: Optional[Mapping[str, Any]] = None,
     render_mode: str = "parallel_batch",
+    contrast_preset: str = "conservative",
     fret_count: Optional[int] = None,
     required_notes: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
@@ -1097,7 +1123,7 @@ def finalize_parallel_staging_cache(
         parameter_hash=parameter_hash,
         force=True,
     )
-    spec = build_cache_spec_for_hash(parameter_hash, c, fc, render_mode=render_mode)
+    spec = build_cache_spec_for_hash(parameter_hash, c, fc, render_mode=render_mode, contrast_preset=contrast_preset)
     position_fields = build_position_wav_report_fields(target, fret_count=fc, cfg=c)
     write_cache_spec(target, {**spec, **position_fields})
     generated = sorted(list_note_wavs(target).keys(), key=note_to_midi)
@@ -1133,6 +1159,7 @@ def render_notes_parallel_batch(
     priority_notes: Sequence[str] = DEFAULT_PRIORITY_NOTES,
     t_start: float = 0.0,
     instrument: str = "classical",
+    contrast_preset: str = "conservative",
 ) -> Tuple[float, List[str], List[Dict[str, Any]]]:
     """Render note chunks in parallel worker dirs, merge to staging, promote to target."""
     root = Path(repo_root)
@@ -1210,6 +1237,7 @@ def render_notes_parallel_batch(
                 worker_dir=worker_dir,
                 binary=binary,
                 instrument=instrument,
+                contrast_preset=contrast_preset,
             )
             result = {
                 "worker_id": worker_id,
@@ -1290,6 +1318,7 @@ def render_notes_parallel_batch(
         parameter_hash=parameter_hash or cache_key,
         cfg=cfg,
         render_mode="parallel_batch",
+        contrast_preset=contrast_preset,
         required_notes=build_required_note_set_from_fretboard(int(cfg.get("fret_count") or 19)),
     )
     audit = run_note_mapping_audit(target_dir, parameter_hash or cache_key, cfg=cfg)
@@ -1328,6 +1357,7 @@ def render_single_note(
     binary: Optional[Path] = None,
     cache_key: str = "",
     instrument: str = "classical",
+    contrast_preset: str = "conservative",
 ) -> float:
     normalized = normalize_note_name(note_name)
     dur = float(duration_s if duration_s is not None else duration_for_note(normalized))
@@ -1346,6 +1376,7 @@ def render_single_note(
         render_subdir=rel_subdir,
         stk_wav_relpath=stk_rel,
         instrument=instrument,
+        contrast_preset=contrast_preset,
     )
     params_path = tmp_dir / "params.json"
     params_path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
@@ -1376,6 +1407,7 @@ def build_note_library(
     priority_notes: Optional[Sequence[str]] = None,
     render_mode: Optional[str] = None,
     parallel_workers: Optional[int] = None,
+    contrast_preset: str = "conservative",
 ) -> Dict[str, Any]:
     root = Path(repo_root or REPO_ROOT)
     cfg = load_app_stk_config(root)
@@ -1388,6 +1420,7 @@ def build_note_library(
     notes = order_notes_with_priority(required, prio)
     note_range = note_range or note_range_label_from_required(required)
     mode = str(render_mode or cfg.get("render_mode") or "batch")
+    preset_name, preset_strength = resolve_classic_audible_identity_contrast(contrast_preset)
     worker_count = parallel_workers_from_config(cfg)
     if mode == "parallel_batch" and worker_count <= 1:
         mode = "batch"
@@ -1396,13 +1429,19 @@ def build_note_library(
     target_dir = Path(cache_dir) if cache_dir else note_cache_dir(sample_id, instrument, output_root)
     target_dir.mkdir(parents=True, exist_ok=True)
     cache_key = parameter_hash or sample_id
-    spec_doc = build_cache_spec_for_hash(cache_key, cfg, fret_count, render_mode=mode)
+    spec_doc = build_cache_spec_for_hash(
+        cache_key,
+        cfg,
+        fret_count,
+        render_mode=mode,
+        contrast_preset=preset_name,
+    )
     spec_hash = str(spec_doc["cache_spec_hash"])
     effective_workers = int(spec_doc.get("parallel_workers") or worker_count)
     bg_status_path = background_status_path(cache_key, instrument) if parameter_hash else None
     started_at = _utc_now()
     print(
-        f"APP_STK_RENDER_MODE {mode} workers={effective_workers} hash={parameter_hash or cache_key}",
+        f"APP_STK_RENDER_MODE {mode} workers={effective_workers} hash={parameter_hash or cache_key} contrast={preset_name}",
         flush=True,
     )
     target_runtime_s = float(cfg.get("target_runtime_s") or 180)
@@ -1439,6 +1478,8 @@ def build_note_library(
             "cache_hit_count": cache_hits,
             "cache_miss_count": cache_misses,
             "render_mode": mode,
+            "classic_contrast_preset": preset_name,
+            "classic_contrast_strength": preset_strength,
         }
         if job_status_json is not None:
             _write_json(job_status_json, {**progress_doc, "elapsed_s": elapsed})
@@ -1455,6 +1496,8 @@ def build_note_library(
             "elapsed_time_s": 0.0,
             "started_at": started_at,
             "render_mode": mode,
+            "classic_contrast_preset": preset_name,
+            "classic_contrast_strength": preset_strength,
         }
         if mode == "parallel_batch" and to_render:
             initial_status["worker_count"] = effective_workers
@@ -1507,6 +1550,7 @@ def build_note_library(
                     priority_notes=prio,
                     t_start=t_start,
                     instrument=instrument,
+                    contrast_preset=preset_name,
                 )
                 per_note = parallel_elapsed / max(len(to_render), 1)
                 for note_name in to_render:
@@ -1543,6 +1587,7 @@ def build_note_library(
                     binary=binary,
                     cache_key=cache_key,
                     instrument=instrument,
+                    contrast_preset=preset_name,
                 )
                 per_note = batch_elapsed / max(len(to_render), 1)
                 for note_name in to_render:
@@ -1565,10 +1610,11 @@ def build_note_library(
                             note_name=note_name,
                             cache_path=dest,
                             duration_s=note_dur,
-                            binary=binary,
-                            cache_key=cache_key,
-                            instrument=instrument,
-                        )
+                        binary=binary,
+                        cache_key=cache_key,
+                        instrument=instrument,
+                        contrast_preset=preset_name,
+                    )
                     except Exception:
                         missing.append(note_name)
                         timings[note_name] = -1.0
@@ -1588,6 +1634,7 @@ def build_note_library(
                         duration_s=note_dur,
                         binary=binary,
                         cache_key=cache_key,
+                        contrast_preset=preset_name,
                     )
                 except Exception:
                     missing.append(note_name)
@@ -1667,6 +1714,8 @@ def build_note_library(
         "renderer": "STK/C++",
         "python_role": "parameter_export_only",
         "stk_demo_version": ACCEPTED_STK_DEMO_VERSION,
+        "classic_contrast_preset": preset_name,
+        "classic_contrast_strength": preset_strength,
         "physical_source": "audit_or_lhs_fallback",
         "rom_physical_summary": {
             "body_depth_m": physical.get("body_depth_m"),

@@ -17,6 +17,7 @@ from app_stk_fretboard import (  # noqa: E402
 )
 from stk_app_audio_service import (  # noqa: E402
     APP_STK_PARALLEL_WORKERS_ENABLED,
+    CLASSIC_AUDIBLE_IDENTITY_CONTRAST_PRESETS,
     DEFAULT_APP_STK_WORKERS,
     build_note_library,
     list_available_samples,
@@ -58,6 +59,12 @@ def main(argv=None) -> int:
     )
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--repo-root", type=Path, default=REPO_ROOT)
+    parser.add_argument(
+        "--contrast-preset",
+        choices=sorted(CLASSIC_AUDIBLE_IDENTITY_CONTRAST_PRESETS.keys()),
+        default="conservative",
+        help="Classical STK audible identity contrast preset for VM listening experiments.",
+    )
     args = parser.parse_args(list(argv) if argv is not None else None)
     sample_id = str(args.sample_id or default_sample_id_for_shape(args.shape_type))
 
@@ -91,10 +98,12 @@ def main(argv=None) -> int:
         priority_notes=prio,
         render_mode=args.render_mode,
         parallel_workers=args.parallel_workers,
+        contrast_preset=args.contrast_preset,
     )
     print(f"Render mode: {report.get('render_mode')}")
     print(f"Parallel workers enabled: {APP_STK_PARALLEL_WORKERS_ENABLED}")
     print(f"Worker count: {report.get('worker_count', DEFAULT_APP_STK_WORKERS)}")
+    print(f"Contrast preset: {report.get('classic_contrast_preset')}")
     print(f"Required notes: {report.get('fretboard_required_note_count')} ({note_range})")
     print(f"Readiness: {report['readiness']}")
     print(f"Status: {report.get('status', report['readiness'])}")

@@ -114,6 +114,12 @@ AUDIT_SCALAR_KEYS: Tuple[str, ...] = (
 
 MEANINGFUL_SPREAD_THRESHOLD = 0.035
 CLASSIC_AUDIBLE_IDENTITY_CONTRAST = 0.12
+CLASSIC_AUDIBLE_IDENTITY_CONTRAST_PRESETS: Dict[str, float] = {
+    "off": 0.0,
+    "conservative": CLASSIC_AUDIBLE_IDENTITY_CONTRAST,
+    "strong": 0.25,
+    "aggressive": 0.35,
+}
 
 SAMPLE_PROFILES: Dict[str, str] = {
     "sample_000": "balanced_neutral",
@@ -787,51 +793,61 @@ def _spread_around_one(value: float, strength: float, lo: float, hi: float) -> f
     return _clamp(1.0 + (float(value) - 1.0) * (1.0 + strength), lo, hi)
 
 
+def resolve_classic_audible_identity_contrast(preset: Optional[str] = None) -> Tuple[str, float]:
+    name = str(preset or "conservative").strip().lower()
+    if name not in CLASSIC_AUDIBLE_IDENTITY_CONTRAST_PRESETS:
+        valid = ", ".join(sorted(CLASSIC_AUDIBLE_IDENTITY_CONTRAST_PRESETS))
+        raise ValueError(f"unknown CLASSIC STK contrast preset {preset!r}; expected one of: {valid}")
+    return name, float(CLASSIC_AUDIBLE_IDENTITY_CONTRAST_PRESETS[name])
+
+
 def _apply_classic_audible_identity_contrast(
     *,
     factors: Mapping[str, float],
     mix_scales: Mapping[str, float],
-    strength: float = CLASSIC_AUDIBLE_IDENTITY_CONTRAST,
+    preset: Optional[str] = "conservative",
 ) -> Tuple[Dict[str, float], Dict[str, float], Dict[str, Any]]:
     """Small Classical-only emphasis of existing physical/body identity factors."""
+    preset_name, strength = resolve_classic_audible_identity_contrast(preset)
     if strength <= 0.0:
-        return dict(factors), dict(mix_scales), {"enabled": False, "strength": 0.0}
-    s = _clamp(float(strength), 0.0, 0.20)
+        return dict(factors), dict(mix_scales), {"enabled": False, "preset": preset_name, "strength": 0.0}
+    s = _clamp(float(strength), 0.0, 0.35)
     out_factors = dict(factors)
     out_mix = dict(mix_scales)
     if "radiation_brightness_factor" in out_factors:
         out_factors["radiation_brightness_factor"] = round(
-            _spread_around_one(float(out_factors["radiation_brightness_factor"]), 0.60 * s, 0.78, 1.28),
+            _spread_around_one(float(out_factors["radiation_brightness_factor"]), 0.70 * s, 0.74, 1.34),
             6,
         )
     if "top_damping_factor" in out_factors:
         out_factors["top_damping_factor"] = round(
-            _spread_around_one(float(out_factors["top_damping_factor"]), 0.45 * s, 0.78, 1.32),
+            _spread_around_one(float(out_factors["top_damping_factor"]), 0.60 * s, 0.74, 1.38),
             6,
         )
     direct_base = float(out_mix.get("direct_string_gain") or 1.0)
     body_base = float(out_mix.get("body_modal_gain") or 1.0)
     send_base = float(out_mix.get("string_to_body_send_scale") or 1.0)
     out_mix["direct_string_gain"] = round(
-        _clamp(_spread_around_one(direct_base, 0.55 * s, 0.68, 1.36) * (1.0 - 0.25 * s), 0.66, 1.34),
+        _clamp(_spread_around_one(direct_base, 0.65 * s, 0.62, 1.42) * (1.0 - 0.30 * s), 0.58, 1.40),
         6,
     )
     out_mix["body_modal_gain"] = round(
-        _clamp(_spread_around_one(body_base, 0.70 * s, 0.68, 1.44) * (1.0 + 0.45 * s), 0.72, 1.48),
+        _clamp(_spread_around_one(body_base, 0.95 * s, 0.64, 1.58) * (1.0 + 0.55 * s), 0.70, 1.62),
         6,
     )
     out_mix["string_to_body_send_scale"] = round(
-        _clamp(_spread_around_one(send_base, 0.55 * s, 0.72, 1.34) * (1.0 + 0.35 * s), 0.74, 1.36),
+        _clamp(_spread_around_one(send_base, 0.80 * s, 0.68, 1.46) * (1.0 + 0.45 * s), 0.72, 1.50),
         6,
     )
     return out_factors, out_mix, {
         "enabled": True,
+        "preset": preset_name,
         "strength": round(s, 6),
         "direct_string_gain_multiplier": round(out_mix["direct_string_gain"] / max(direct_base, 1e-9), 6),
         "body_modal_gain_multiplier": round(out_mix["body_modal_gain"] / max(body_base, 1e-9), 6),
         "string_to_body_send_multiplier": round(out_mix["string_to_body_send_scale"] / max(send_base, 1e-9), 6),
-        "radiation_brightness_spread_multiplier": round(1.0 + 0.60 * s, 6),
-        "top_damping_spread_multiplier": round(1.0 + 0.45 * s, 6),
+        "radiation_brightness_spread_multiplier": round(1.0 + 0.70 * s, 6),
+        "top_damping_spread_multiplier": round(1.0 + 0.60 * s, 6),
     }
 
 
@@ -1148,6 +1164,7 @@ def build_render_entry(
     demo_version: str = "v1",
     factor_multipliers: Optional[Mapping[str, float]] = None,
     perceptual_mix: Optional[Mapping[str, float]] = None,
+    classic_contrast_preset: str = "conservative",
     frequency_hz: Optional[float] = None,
     output_wav_relpath: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -1177,6 +1194,7 @@ def build_render_entry(
         factors, mix_scales, audible_identity_contrast = _apply_classic_audible_identity_contrast(
             factors=factors,
             mix_scales=mix_scales,
+            preset=classic_contrast_preset,
         )
     if demo_version == "v4_10_samples":
         note_support = _v4_note_support(sample_id, note_name, factors, physical)
@@ -1356,6 +1374,7 @@ def build_parameter_export(
     sample_rate: int = NUMERIC_SR,
     duration_s: float = DURATION_S,
     demo_version: str = "v1",
+    classic_contrast_preset: str = "conservative",
 ) -> Dict[str, Any]:
     root = Path(repo_root or REPO_ROOT)
     cfg = demo_config(demo_version)
@@ -1450,6 +1469,7 @@ def build_parameter_export(
                     demo_version=demo_version,
                     factor_multipliers=factor_mults,
                     perceptual_mix=mix_scales,
+                    classic_contrast_preset=classic_contrast_preset,
                 )
             )
 
@@ -1528,6 +1548,7 @@ def build_parameter_export(
             "base": "lhs_continuous_physical_ranking",
             "sample_count": len(sample_set),
             "continuous_mix_from_physical_proxies": True,
+            "classic_audible_identity_contrast_preset": classic_contrast_preset,
         }
     return doc
 
@@ -1567,11 +1588,17 @@ def write_parameter_export(
     repo_root: Optional[Path] = None,
     audit: Optional[Mapping[str, Any]] = None,
     demo_version: str = "v1",
+    classic_contrast_preset: str = "conservative",
 ) -> Path:
     root = Path(repo_root or REPO_ROOT)
     cfg = demo_config(demo_version)
     out = Path(output_path or (root / cfg["params_json"]))
-    doc = build_parameter_export(repo_root=root, audit=audit, demo_version=demo_version)
+    doc = build_parameter_export(
+        repo_root=root,
+        audit=audit,
+        demo_version=demo_version,
+        classic_contrast_preset=classic_contrast_preset,
+    )
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(doc, indent=2, sort_keys=False) + "\n", encoding="utf-8")
     return out
@@ -1587,6 +1614,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         default="v1",
         help="Demo pack version (v2 audit; v3 stronger perceptual differentiation; v4_10_samples 10 LHS samples)",
     )
+    parser.add_argument(
+        "--classic-contrast-preset",
+        choices=sorted(CLASSIC_AUDIBLE_IDENTITY_CONTRAST_PRESETS.keys()),
+        default="conservative",
+        help="Classical v4_10_samples audible identity contrast preset.",
+    )
     args = parser.parse_args(list(argv) if argv is not None else None)
     cfg = demo_config(args.demo_version)
     default_out = args.repo_root / cfg["params_json"]
@@ -1594,6 +1627,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         args.output or default_out,
         repo_root=args.repo_root,
         demo_version=args.demo_version,
+        classic_contrast_preset=args.classic_contrast_preset,
     )
     print(f"Wrote STK parameter export ({cfg['demo_id']}): {path}")
     sample_set = sample_set_for_demo(args.demo_version)
