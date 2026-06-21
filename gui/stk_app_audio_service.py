@@ -2011,6 +2011,12 @@ def refresh_stk_background_job_status(
     if cache_is_ready_for_fretboard(scan_dir, parameter_hash, cfg=cfg):
         return _finalize_ready(scan_dir)
 
+    if proc_alive or (job_doc.get("status") == "running" and is_active_hash):
+        result["status"] = "running"
+        result["rendered_notes"] = reported_rendered if reported_rendered > 0 else actual_wav_count
+        result["wav_count"] = actual_wav_count
+        return result
+
     # 2) Explicit failed report for this hash.
     if report and str(report.get("parameter_hash") or parameter_hash) == parameter_hash:
         if report.get("status") in ("failed",):
@@ -2526,12 +2532,12 @@ def user_facing_stk_status(internal_status: str) -> str:
     if status in ("stale",):
         return "Design changed - Save & Sync to prepare updated sound"
     if status in ("running", "partial_ready"):
-        return "Preparing guitar sound…"
+        return "Building guitar sound with STK... This may take a few minutes."
     if status == "ready":
         return "Guitar sound is ready"
     if status == "failed":
-        return "Sound preparation failed — retry Save & Sync"
-    return "Preparing guitar sound…"
+        return "Sound preparation did not finish. Save & Sync to retry."
+    return "Building guitar sound with STK... This may take a few minutes."
 
 
 _ENHARMONIC_EQUIV: Dict[str, str] = {

@@ -254,8 +254,26 @@ def _clear_stk_render_request() -> None:
     _session_set("stk_generate_intent_hash", "")
 
 
+def _clear_stk_waiting_display_request() -> None:
+    """Clear an early Generate click once audio is ready; user clicks again to open."""
+    _clear_stk_render_request()
+    _session_set("show_clickable_guitar_requested", False)
+
+
+def stk_status_precedence(state: Mapping[str, Any]) -> str:
+    """UI precedence: preparing > ready > explicit failed > idle."""
+    status = str(state.get("status") or "not_started")
+    if status in ("running", "partial_ready", "not_started", "waiting_for_rom", "stale"):
+        return "preparing"
+    if bool(state.get("preview_cache_ready")) or status == "ready":
+        return "ready"
+    if status == "failed":
+        return "failed"
+    return "idle"
+
+
 def _set_stk_render_request(parameter_hash: str) -> None:
-    """Record a single-click Generate request for auto-load when STK finishes."""
+    """Record a single-click Generate request while STK is still preparing."""
     import time
 
     _session_set("stk_render_requested", True)
@@ -279,7 +297,7 @@ def poll_stk_render_request(
     rom_physical_summary_path: str = "",
     instrument: str = "classical",
 ) -> Dict[str, Any]:
-    """Refresh STK job status; auto-load player when a Generate request completes."""
+    """Refresh STK job status without opening the player automatically."""
     out: Dict[str, Any] = {"polled": False, "result": None}
     if not st.session_state.get("stk_render_requested"):
         return out
@@ -300,6 +318,7 @@ def poll_stk_render_request(
     preview_ready = bool(state.get("preview_cache_ready")) or _stk_cache_is_loadable(
         parameter_hash, repo_root, instrument
     )
+    precedence = stk_status_precedence({**state, "preview_cache_ready": preview_ready})
     _session_set("stk_parameter_hash", parameter_hash)
     _session_set("stk_job_status", status if not preview_ready else "ready")
     _session_set("stk_preview_cache_ready", preview_ready)
@@ -318,34 +337,15 @@ def poll_stk_render_request(
     )
     _session_set("stk_last_status", "ready" if preview_ready else status)
 
-    if status == "failed":
+    if precedence == "failed":
         _clear_stk_render_request()
         out["result"] = {"action": "stk_failed", "status": status}
         return out
 
-    if preview_ready:
-        ready_cache = preview_cache_dir(parameter_hash, instrument)
-        _log_once(
-            f"auto_load_ready_{parameter_hash}_{_norm_cache_path(ready_cache)}",
-            f"APP_STK_AUTO_LOAD_READY hash={parameter_hash} cache_dir={ready_cache}",
-        )
-        try:
-            result = generate_or_load_ready_guitar(
-                repo_root=repo_root,
-                rom_fp=rom_fp,
-                lhs_params=lhs_params,
-                geom=geom,
-                top_wood=top_wood,
-                back_wood=back_wood,
-                rom_physical_summary_path=rom_physical_summary_path,
-                instrument=instrument,
-            )
-            _clear_stk_render_request()
-            out["result"] = result
-            return out
-        except Exception as exc:
-            out["result"] = {"action": "stk_load_failed", "error": str(exc)}
-            return out
+    if precedence == "ready":
+        _clear_stk_waiting_display_request()
+        out["result"] = {"action": "stk_ready_waiting_for_generate", "status": "ready"}
+        return out
 
     out["result"] = {"action": "stk_running", "status": status}
     return out
@@ -362,7 +362,7 @@ def render_stk_render_watch_panel(
     rom_physical_summary_path: str = "",
     instrument: str = "classical",
 ) -> Optional[Dict[str, Any]]:
-    """Show STK build status and auto-load when ready (fragment-safe; no meta refresh)."""
+    """Show STK build status and wait for a user Generate click when ready."""
     poll = poll_stk_render_request(
         repo_root=repo_root,
         rom_fp=rom_fp,
@@ -386,7 +386,7 @@ def render_stk_render_watch_panel(
             name = str(result.get("entry", {}).get("display_name") or "guitar")
             st.success(f"Guitar sound is ready — saved **{name}**.")
     elif action == "stk_failed":
-        st.error("STK rendering failed. Please try **Generate Sound** again.")
+        st.error("Sound preparation did not finish. Save & Sync to retry.")
     elif action == "stk_load_failed":
         st.error(str(result.get("error") or "Could not load guitar player."))
     elif action == "stk_running":
@@ -429,8 +429,9 @@ def request_generate_guitar(
     state = resolve_preview_cache_ready_state(parameter_hash, instrument=instrument, repo_root=repo_root)
     status = str(state.get("status") or "not_started")
     preview_ready = bool(state.get("preview_cache_ready"))
+    precedence = stk_status_precedence({**state, "preview_cache_ready": preview_ready})
 
-    if preview_ready or status == "ready":
+    if precedence == "ready":
         return generate_or_load_ready_guitar(
             repo_root=repo_root,
             rom_fp=rom_fp,
@@ -442,7 +443,7 @@ def request_generate_guitar(
             instrument=instrument,
         )
 
-    if status == "failed":
+    if precedence == "failed":
         return {
             "action": "stk_failed",
             "parameter_hash": parameter_hash,
@@ -450,7 +451,7 @@ def request_generate_guitar(
             "error": state.get("error"),
         }
 
-    if status in ("running", "partial_ready", "not_started", "waiting_for_rom", "stale"):
+    if precedence in ("preparing", "idle"):
         return {
             "action": "stk_running",
             "parameter_hash": parameter_hash,
@@ -475,7 +476,7 @@ def fulfill_generate_intent_if_ready(
     rom_physical_summary_path: str = "",
     instrument: str = "classical",
 ) -> Optional[Dict[str, Any]]:
-    """Legacy alias — auto-load uses ``poll_stk_render_request`` / ``stk_render_requested_hash``."""
+    """Legacy alias for the current Generate readiness polling path."""
     poll = poll_stk_render_request(
         repo_root=repo_root,
         rom_fp=rom_fp,

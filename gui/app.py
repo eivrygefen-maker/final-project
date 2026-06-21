@@ -1796,7 +1796,7 @@ except Exception:
     _STK_POLL_INTERVAL_S = 12
 
 _STK_RENDER_TERMINAL_ACTIONS = frozenset(
-    {"saved_new", "loaded_existing", "activated_preview", "stk_failed"}
+    {"saved_new", "loaded_existing", "activated_preview", "stk_failed", "stk_ready_waiting_for_generate"}
 )
 
 
@@ -2055,8 +2055,7 @@ def _render_main_studio(
     _render_step_heading(
         3,
         "LISTEN TO YOUR GUITAR",
-        "Click <strong>Generate Sound</strong> to open and play your guitar. If the sound is still preparing, "
-        "the player will appear automatically when it is ready.",
+        "Click <strong>Generate Sound</strong> when sound is ready to open and play your guitar.",
     )
 
     from components.guitar_player import guitar_player  # noqa: WPS433
@@ -2096,7 +2095,6 @@ def _render_main_studio(
         player_payload = {"status": "building", "positions": [], "fingerprint": ""}
         player_key = "guitar_player_building"
     elif _show_player_requested and _stk_status == "failed":
-        st.error("Guitar sound cache is incomplete. Please Save & Sync again before opening the player.")
         player_payload = {"status": "hidden", "positions": [], "fingerprint": ""}
         player_key = "guitar_player_failed"
     else:
