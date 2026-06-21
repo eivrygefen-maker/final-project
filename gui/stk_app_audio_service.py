@@ -2534,7 +2534,7 @@ def user_facing_stk_status(internal_status: str) -> str:
     if status in ("running", "partial_ready"):
         return "Building guitar sound with STK... This may take a few minutes."
     if status == "ready":
-        return "Guitar sound is ready"
+        return ""
     if status == "failed":
         return "Sound preparation did not finish. Save & Sync to retry."
     return "Building guitar sound with STK... This may take a few minutes."

@@ -1796,7 +1796,7 @@ except Exception:
     _STK_POLL_INTERVAL_S = 12
 
 _STK_RENDER_TERMINAL_ACTIONS = frozenset(
-    {"saved_new", "loaded_existing", "activated_preview", "stk_failed", "stk_ready_waiting_for_generate"}
+    {"saved_new", "loaded_existing", "activated_preview", "stk_failed"}
 )
 
 
@@ -1959,10 +1959,12 @@ def _render_main_studio(
         "partial_ready",
     ):
         pass
-    else:
+    elif _stk_status == "failed":
         from stk_app_audio_service import user_facing_stk_status  # noqa: WPS433
 
         st.caption(user_facing_stk_status(_stk_status))
+    else:
+        pass
     _gc1, _gc2, _gc3 = st.columns([1, 2, 1])
     with _gc2:
         gen_sound = st.button(
@@ -1993,12 +1995,8 @@ def _render_main_studio(
                 )
                 if result.get("action") in ("stk_started", "stk_running"):
                     st.info("Building guitar sound with STK... This may take a few minutes.")
-                elif result.get("action") == "loaded_existing":
-                    st.info("Guitar sound is ready.")
-                elif result.get("action") in ("activated_preview", "saved_new"):
-                    st.success("Guitar sound is ready — play notes on the guitar below.")
-                else:
-                    st.success("Guitar sound is ready — play notes on the guitar below.")
+                elif result.get("action") == "stk_failed":
+                    st.error("Sound preparation did not finish. Save & Sync to retry.")
             except RuntimeError as exc:
                 st.warning(str(exc))
             except Exception as exc:

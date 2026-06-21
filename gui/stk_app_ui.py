@@ -254,12 +254,6 @@ def _clear_stk_render_request() -> None:
     _session_set("stk_generate_intent_hash", "")
 
 
-def _clear_stk_waiting_display_request() -> None:
-    """Clear an early Generate click once audio is ready; user clicks again to open."""
-    _clear_stk_render_request()
-    _session_set("show_clickable_guitar_requested", False)
-
-
 def stk_status_precedence(state: Mapping[str, Any]) -> str:
     """UI precedence: preparing > ready > explicit failed > idle."""
     status = str(state.get("status") or "not_started")
@@ -297,7 +291,7 @@ def poll_stk_render_request(
     rom_physical_summary_path: str = "",
     instrument: str = "classical",
 ) -> Dict[str, Any]:
-    """Refresh STK job status without opening the player automatically."""
+    """Refresh STK job status and fulfill a remembered Generate click when ready."""
     out: Dict[str, Any] = {"polled": False, "result": None}
     if not st.session_state.get("stk_render_requested"):
         return out
@@ -343,8 +337,21 @@ def poll_stk_render_request(
         return out
 
     if precedence == "ready":
-        _clear_stk_waiting_display_request()
-        out["result"] = {"action": "stk_ready_waiting_for_generate", "status": "ready"}
+        try:
+            result = generate_or_load_ready_guitar(
+                repo_root=repo_root,
+                rom_fp=rom_fp,
+                lhs_params=lhs_params,
+                geom=geom,
+                top_wood=top_wood,
+                back_wood=back_wood,
+                rom_physical_summary_path=rom_physical_summary_path,
+                instrument=instrument,
+            )
+            _clear_stk_render_request()
+            out["result"] = result
+        except Exception as exc:
+            out["result"] = {"action": "stk_load_failed", "error": str(exc)}
         return out
 
     out["result"] = {"action": "stk_running", "status": status}
@@ -362,7 +369,7 @@ def render_stk_render_watch_panel(
     rom_physical_summary_path: str = "",
     instrument: str = "classical",
 ) -> Optional[Dict[str, Any]]:
-    """Show STK build status and wait for a user Generate click when ready."""
+    """Show STK build status and fulfill a user Generate click when ready."""
     poll = poll_stk_render_request(
         repo_root=repo_root,
         rom_fp=rom_fp,
@@ -378,13 +385,7 @@ def render_stk_render_watch_panel(
     result = poll.get("result") or {}
     action = str(result.get("action") or "")
     if action in ("saved_new", "loaded_existing", "activated_preview"):
-        if action == "loaded_existing":
-            st.success("Guitar sound is ready — loaded from comparison stack.")
-        elif action == "activated_preview":
-            st.success("Guitar sound is ready — player loaded.")
-        else:
-            name = str(result.get("entry", {}).get("display_name") or "guitar")
-            st.success(f"Guitar sound is ready — saved **{name}**.")
+        pass
     elif action == "stk_failed":
         st.error("Sound preparation did not finish. Save & Sync to retry.")
     elif action == "stk_load_failed":

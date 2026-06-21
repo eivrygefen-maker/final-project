@@ -147,10 +147,11 @@ class TestStkNoteLibraryStartupCommand(unittest.TestCase):
         self.assertEqual(stk_app_ui.stk_status_precedence({"status": "failed"}), "failed")
         self.assertEqual(stk_app_ui.stk_status_precedence({"status": "unknown"}), "idle")
 
-    def test_ready_poll_does_not_auto_activate_player(self) -> None:
+    def test_ready_poll_auto_activates_after_prior_generate_click(self) -> None:
         sys.modules["streamlit"].session_state.clear()
         sys.modules["streamlit"].session_state["stk_render_requested"] = True
         sys.modules["streamlit"].session_state["stk_render_requested_hash"] = "hash-ready"
+        sys.modules["streamlit"].session_state["show_clickable_guitar_requested"] = True
         with (
             patch.object(stk_app_ui, "compute_parameter_hash", return_value="hash-ready"),
             patch.object(stk_app_ui, "_stk_cache_is_loadable", return_value=True),
@@ -159,7 +160,11 @@ class TestStkNoteLibraryStartupCommand(unittest.TestCase):
                 "resolve_preview_cache_ready_state",
                 return_value={"status": "ready", "preview_cache_ready": True},
             ),
-            patch.object(stk_app_ui, "generate_or_load_ready_guitar") as activate,
+            patch.object(
+                stk_app_ui,
+                "generate_or_load_ready_guitar",
+                return_value={"action": "activated_preview"},
+            ) as activate,
         ):
             result = stk_app_ui.poll_stk_render_request(
                 repo_root=Path("."),
@@ -170,10 +175,10 @@ class TestStkNoteLibraryStartupCommand(unittest.TestCase):
                 back_wood="rosewood",
             )
 
-        self.assertEqual(result["result"]["action"], "stk_ready_waiting_for_generate")
+        self.assertEqual(result["result"]["action"], "activated_preview")
         self.assertFalse(sys.modules["streamlit"].session_state["stk_render_requested"])
-        self.assertFalse(sys.modules["streamlit"].session_state["show_clickable_guitar_requested"])
-        activate.assert_not_called()
+        self.assertTrue(sys.modules["streamlit"].session_state["show_clickable_guitar_requested"])
+        activate.assert_called_once()
 
     def test_activation_latches_stable_player_hash_and_cache_dir(self) -> None:
         sys.modules["streamlit"].session_state.clear()
