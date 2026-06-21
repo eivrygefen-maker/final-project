@@ -14,7 +14,7 @@ import wave
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -31,6 +31,8 @@ DEFAULT_OUTPUT_DIR = REPO_ROOT / "audio" / "diagnostics"
 DEFAULT_TARGET_RMS_DBFS = -20.0
 DEFAULT_PEAK_CEILING_DBFS = -1.0
 DEFAULT_MAX_GAIN_DB = 6.0
+DEFAULT_MIN_VALID_RMS = 1e-5
+DEFAULT_MIN_VALID_PEAK = 1e-4
 COMPARISON_MODES: Tuple[str, ...] = ("matched_loudness", "bounded_loudness", "raw_level")
 
 
@@ -210,9 +212,24 @@ def summarize_clip_rows(rows: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
     }
 
 
-def load_clips(candidates: Sequence[CacheCandidate]) -> Tuple[List[AudioClip], List[Dict[str, Any]]]:
+def _rejected_clip_row(candidate: CacheCandidate, reason: str) -> Dict[str, Any]:
+    return {
+        "sample_id": candidate.sample_id,
+        "parameter_hash": candidate.parameter_hash,
+        "cache_path": _repo_relative(candidate.cache_path),
+        "note_wav_path": _repo_relative(candidate.note_wav_path) if candidate.note_wav_path else "",
+        "reason": reason,
+    }
+
+
+def load_clips(
+    candidates: Sequence[CacheCandidate],
+    *,
+    min_valid_rms: float = DEFAULT_MIN_VALID_RMS,
+    min_valid_peak: float = DEFAULT_MIN_VALID_PEAK,
+) -> Tuple[List[AudioClip], List[Dict[str, Any]]]:
     clips: List[AudioClip] = []
-    skipped: List[Dict[str, Any]] = []
+    rejected: List[Dict[str, Any]] = []
     reference_rate: Optional[int] = None
     for candidate in candidates:
         if candidate.note_wav_path is None:
@@ -220,26 +237,29 @@ def load_clips(candidates: Sequence[CacheCandidate]) -> Tuple[List[AudioClip], L
         try:
             samples, sample_rate = read_wav_mono_float(candidate.note_wav_path)
         except Exception as exc:  # noqa: BLE001 - diagnostic should keep scanning.
-            skipped.append(
-                {
-                    "sample_id": candidate.sample_id,
-                    "cache_path": _repo_relative(candidate.cache_path),
-                    "note_wav_path": _repo_relative(candidate.note_wav_path),
-                    "reason": f"read_error: {exc}",
-                }
-            )
+            rejected.append(_rejected_clip_row(candidate, f"read_error: {exc}"))
+            continue
+        clip_peak = float(np.max(np.abs(samples))) if samples.size else 0.0
+        clip_rms = rms(samples)
+        if sample_rate <= 0:
+            rejected.append(_rejected_clip_row(candidate, f"invalid_sample_rate: {sample_rate}"))
+            continue
+        if samples.size == 0:
+            rejected.append(_rejected_clip_row(candidate, "zero_length_wav"))
+            continue
+        if not np.all(np.isfinite(samples)):
+            rejected.append(_rejected_clip_row(candidate, "non_finite_samples"))
+            continue
+        if clip_rms < min_valid_rms:
+            rejected.append(_rejected_clip_row(candidate, f"below_min_rms: {clip_rms:.8g} < {min_valid_rms:.8g}"))
+            continue
+        if clip_peak < min_valid_peak:
+            rejected.append(_rejected_clip_row(candidate, f"below_min_peak: {clip_peak:.8g} < {min_valid_peak:.8g}"))
             continue
         if reference_rate is None:
             reference_rate = sample_rate
         elif sample_rate != reference_rate:
-            skipped.append(
-                {
-                    "sample_id": candidate.sample_id,
-                    "cache_path": _repo_relative(candidate.cache_path),
-                    "note_wav_path": _repo_relative(candidate.note_wav_path),
-                    "reason": f"sample_rate_mismatch: {sample_rate} != {reference_rate}",
-                }
-            )
+            rejected.append(_rejected_clip_row(candidate, f"sample_rate_mismatch: {sample_rate} != {reference_rate}"))
             continue
         clips.append(
             AudioClip(
@@ -247,11 +267,11 @@ def load_clips(candidates: Sequence[CacheCandidate]) -> Tuple[List[AudioClip], L
                 original_samples=samples,
                 sample_rate=sample_rate,
                 original_duration_s=float(samples.size / sample_rate),
-                original_peak=float(np.max(np.abs(samples))) if samples.size else 0.0,
-                original_rms=rms(samples),
+                original_peak=clip_peak,
+                original_rms=clip_rms,
             )
         )
-    return clips, skipped
+    return clips, rejected
 
 
 def render_sequence(
@@ -340,9 +360,9 @@ def write_markdown_report(path: Path, report: Dict[str, Any]) -> None:
         f"- Note: `{report['note']}`",
         f"- Comparison mode: `{report['comparison_mode']}`",
         f"- Output WAV: `{report.get('output_wav') or 'not written'}`",
-        f"- Selected clips: {len(report['clips'])}",
+        f"- Valid clips: {len(report['clips'])}",
         f"- Missing-note caches: {len(report['missing_notes'])}",
-        f"- Skipped clips: {len(report['skipped'])}",
+        f"- Rejected invalid clips: {len(report['rejected_clips'])}",
         "",
         "## Normalization",
         "",
@@ -382,9 +402,9 @@ def write_markdown_report(path: Path, report: Dict[str, Any]) -> None:
         lines.extend(["", "## Missing Notes", ""])
         for row in report["missing_notes"]:
             lines.append(f"- `{row['cache_path']}` missing `{report['note']}`")
-    if report["skipped"]:
-        lines.extend(["", "## Skipped", ""])
-        for row in report["skipped"]:
+    if report["rejected_clips"]:
+        lines.extend(["", "## Rejected Invalid Clips", ""])
+        for row in report["rejected_clips"]:
             lines.append(f"- `{row['cache_path']}`: {row['reason']}")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -459,7 +479,7 @@ def build_report_for_mode(
     timestamp: str,
     clips: Sequence[AudioClip],
     missing: Sequence[CacheCandidate],
-    skipped: Sequence[Mapping[str, Any]],
+    rejected: Sequence[Mapping[str, Any]],
     comparison_mode: str,
 ) -> Dict[str, Any]:
     output_dir = Path(args.output_dir)
@@ -497,6 +517,10 @@ def build_report_for_mode(
         "sample_rate_hz": sample_rate,
         "duration_s": args.duration_s,
         "silence_s": args.silence_s,
+        "invalid_clip_thresholds": {
+            "min_valid_rms": args.min_valid_rms,
+            "min_valid_peak": args.min_valid_peak,
+        },
         "normalization": normalization_method(
             comparison_mode,
             target_rms_dbfs=args.target_rms_dbfs,
@@ -506,6 +530,7 @@ def build_report_for_mode(
         "summary_spread": summary,
         "normalization_evaluation": preliminary_evaluation(comparison_mode, summary),
         "clips": clip_rows,
+        "valid_clip_count": len(clip_rows),
         "missing_notes": [
             {
                 "sample_id": row.sample_id,
@@ -515,7 +540,8 @@ def build_report_for_mode(
             }
             for row in missing
         ],
-        "skipped": skipped,
+        "rejected_clips": list(rejected),
+        "skipped": list(rejected),
         "rendering_needed": bool(missing) or not wav_written,
         "vm_render_note_cache_hint": (
             "If required notes are missing, regenerate the website/STK note cache on the VM; "
@@ -532,7 +558,11 @@ def build_report(args: argparse.Namespace) -> Dict[str, Any]:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     modes = list(COMPARISON_MODES) if args.comparison_mode == "all" else [args.comparison_mode]
     candidates, missing = discover_classical_caches(Path(args.cache_root), note, args.max_samples)
-    clips, skipped = load_clips(candidates)
+    clips, rejected = load_clips(
+        candidates,
+        min_valid_rms=args.min_valid_rms,
+        min_valid_peak=args.min_valid_peak,
+    )
     reports = [
         build_report_for_mode(
             args,
@@ -540,7 +570,7 @@ def build_report(args: argparse.Namespace) -> Dict[str, Any]:
             timestamp=timestamp,
             clips=clips,
             missing=missing,
-            skipped=skipped,
+            rejected=rejected,
             comparison_mode=mode,
         )
         for mode in modes
@@ -577,6 +607,18 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--target-rms-dbfs", type=float, default=DEFAULT_TARGET_RMS_DBFS)
     parser.add_argument("--peak-ceiling-dbfs", type=float, default=DEFAULT_PEAK_CEILING_DBFS)
     parser.add_argument("--max-gain-db", type=float, default=DEFAULT_MAX_GAIN_DB)
+    parser.add_argument(
+        "--min-valid-rms",
+        type=float,
+        default=DEFAULT_MIN_VALID_RMS,
+        help="Reject readable clips below this RMS before concatenation.",
+    )
+    parser.add_argument(
+        "--min-valid-peak",
+        type=float,
+        default=DEFAULT_MIN_VALID_PEAK,
+        help="Reject readable clips below this peak amplitude before concatenation.",
+    )
     return parser.parse_args(argv)
 
 

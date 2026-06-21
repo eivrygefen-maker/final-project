@@ -19,6 +19,7 @@ from stk_app_audio_service import (  # noqa: E402
     APP_STK_PARALLEL_WORKERS_ENABLED,
     CLASSIC_AUDIBLE_IDENTITY_CONTRAST_PRESETS,
     DEFAULT_APP_STK_WORKERS,
+    DEFAULT_WEBSITE_CLASSIC_CONTRAST_PRESET,
     build_note_library,
     list_available_samples,
     set_active_job,
@@ -62,7 +63,7 @@ def main(argv=None) -> int:
     parser.add_argument(
         "--contrast-preset",
         choices=sorted(CLASSIC_AUDIBLE_IDENTITY_CONTRAST_PRESETS.keys()),
-        default="conservative",
+        default=DEFAULT_WEBSITE_CLASSIC_CONTRAST_PRESET,
         help="Classical STK audible identity contrast preset for VM listening experiments.",
     )
     args = parser.parse_args(list(argv) if argv is not None else None)

@@ -173,8 +173,8 @@ def generate_or_load_ready_guitar(
     rom_physical_summary_path: str = "",
     instrument: str = "classical",
 ) -> Dict[str, Any]:
-    """Save ready guitar to FIFO or load existing duplicate; activate player."""
-    cfg = load_app_stk_config(repo_root)
+    """Activate the current ready preview cache; Recent/Saved stack flow is disabled."""
+    cfg = {"enable_ready_fifo_stack": False}
     parameter_hash = compute_parameter_hash(rom_fp, lhs_params)
     state = resolve_preview_cache_ready_state(parameter_hash, instrument=instrument, repo_root=repo_root)
 

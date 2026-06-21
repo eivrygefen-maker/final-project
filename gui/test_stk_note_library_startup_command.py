@@ -46,6 +46,8 @@ class TestStkNoteLibraryStartupCommand(unittest.TestCase):
         self.assertIn("--shape-type", cmd)
         self.assertEqual(cmd[cmd.index("--shape-type") + 1], "Classical")
         self.assertEqual(cmd[cmd.index("--sample-id") + 1], "sample_000")
+        self.assertIn("--contrast-preset", cmd)
+        self.assertEqual(cmd[cmd.index("--contrast-preset") + 1], "strong")
 
     def test_parallel_staging_promotes_sharp_note_wavs_to_final_cache(self) -> None:
         root = REPO / f".tmp_stk_promotion_test_{uuid4().hex}"
@@ -153,7 +155,7 @@ class TestStkNoteLibraryStartupCommand(unittest.TestCase):
         self.assertTrue(ss["active_player_cache_dir"].endswith("current_preview_hash4"))
         self.assertTrue(ss["active_stk_player_key"])
 
-    def test_existing_saved_stack_does_not_replace_current_preview_activation(self) -> None:
+    def test_generate_ignores_saved_stack_and_activates_current_preview(self) -> None:
         sys.modules["streamlit"].session_state.clear()
         preview = Path("audio/app_stk_note_cache/classical/current_preview_hash5")
         saved = Path("audio/app_stk_note_cache/classical/saved_guitar_hash5_123")
@@ -171,7 +173,6 @@ class TestStkNoteLibraryStartupCommand(unittest.TestCase):
             }
 
         with (
-            patch.object(stk_app_ui, "load_app_stk_config", return_value={"enable_ready_fifo_stack": True}),
             patch.object(stk_app_ui, "compute_parameter_hash", return_value="hash5"),
             patch.object(
                 stk_app_ui,
@@ -194,7 +195,7 @@ class TestStkNoteLibraryStartupCommand(unittest.TestCase):
                 back_wood="rosewood",
             )
 
-        self.assertEqual(result["action"], "loaded_existing")
+        self.assertEqual(result["action"], "activated_preview")
         self.assertEqual(captured["cache_dir"], str(preview))
         self.assertEqual(
             sys.modules["streamlit"].session_state["active_player_cache_dir"],

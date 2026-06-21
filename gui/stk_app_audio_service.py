@@ -89,6 +89,7 @@ DEFAULT_PRIORITY_NOTES: Tuple[str, ...] = ("A2", "A4", "E5")
 CACHE_SPEC_FILE = ".cache_spec.json"
 _POSITION_READY_LOGGED: set[str] = set()
 NOTE_CACHE_VERSION = "app_stk_v4_explicit_frequency"
+DEFAULT_WEBSITE_CLASSIC_CONTRAST_PRESET = "strong"
 APP_STK_PARALLEL_WORKERS_ENABLED = True
 DEFAULT_APP_STK_WORKERS = 3
 AUDIT_INCOMPLETE_MSG = (
@@ -401,7 +402,7 @@ def compute_cache_spec_hash(
     render_mode: str,
     durations_fp: str,
     parallel_workers: int = 1,
-    contrast_preset: str = "conservative",
+    contrast_preset: str = DEFAULT_WEBSITE_CLASSIC_CONTRAST_PRESET,
 ) -> str:
     preset_name, _ = resolve_classic_audible_identity_contrast(contrast_preset)
     payload = {
@@ -424,7 +425,7 @@ def build_cache_spec_for_hash(
     fret_count: int = 19,
     *,
     render_mode: str = "",
-    contrast_preset: str = "conservative",
+    contrast_preset: str = DEFAULT_WEBSITE_CLASSIC_CONTRAST_PRESET,
 ) -> Dict[str, Any]:
     c = dict(cfg or load_app_stk_config())
     required = build_required_note_set_from_fretboard(fret_count)
@@ -516,7 +517,7 @@ def cache_is_ready_for_fretboard(
     if parameter_hash:
         expected = build_cache_spec_for_hash(parameter_hash, c, fret_count)
         if not cache_spec_is_compatible(cache_dir, expected["cache_spec_hash"]):
-            write_cache_spec(cache_dir, expected)
+            return False
         write_cache_spec(cache_dir, {**expected, **spec, **pos_fields})
     elif spec:
         write_cache_spec(cache_dir, {**spec, **pos_fields})
@@ -822,7 +823,7 @@ def _build_single_note_export(
     render_subdir: str,
     stk_wav_relpath: str,
     instrument: str = "classical",
-    contrast_preset: str = "conservative",
+    contrast_preset: str = DEFAULT_WEBSITE_CLASSIC_CONTRAST_PRESET,
 ) -> Dict[str, Any]:
     ref_id = reference_sample_id_for(sample_id)
     physical = load_physical_parameters(sample_id)
@@ -880,7 +881,7 @@ def _build_batch_note_export(
     durations_by_note: Mapping[str, float],
     render_subdir: str,
     instrument: str = "classical",
-    contrast_preset: str = "conservative",
+    contrast_preset: str = DEFAULT_WEBSITE_CLASSIC_CONTRAST_PRESET,
 ) -> Dict[str, Any]:
     ref_id = reference_sample_id_for(sample_id)
     physical = load_physical_parameters(sample_id)
@@ -975,7 +976,7 @@ def render_notes_batch(
     binary: Optional[Path] = None,
     cache_key: str = "",
     instrument: str = "classical",
-    contrast_preset: str = "conservative",
+    contrast_preset: str = DEFAULT_WEBSITE_CLASSIC_CONTRAST_PRESET,
 ) -> float:
     """Render all notes in one STK/C++ invocation."""
     if not notes_to_render:
@@ -1021,7 +1022,7 @@ def render_notes_batch_to_worker_dir(
     worker_dir: Path,
     binary: Optional[Path] = None,
     instrument: str = "classical",
-    contrast_preset: str = "conservative",
+    contrast_preset: str = DEFAULT_WEBSITE_CLASSIC_CONTRAST_PRESET,
 ) -> Tuple[float, int]:
     """Render a worker chunk into an isolated temp dir (flat ``{note}.wav`` files)."""
     if not notes_to_render:
@@ -1105,7 +1106,7 @@ def finalize_parallel_staging_cache(
     parameter_hash: str,
     cfg: Optional[Mapping[str, Any]] = None,
     render_mode: str = "parallel_batch",
-    contrast_preset: str = "conservative",
+    contrast_preset: str = DEFAULT_WEBSITE_CLASSIC_CONTRAST_PRESET,
     fret_count: Optional[int] = None,
     required_notes: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
@@ -1159,7 +1160,7 @@ def render_notes_parallel_batch(
     priority_notes: Sequence[str] = DEFAULT_PRIORITY_NOTES,
     t_start: float = 0.0,
     instrument: str = "classical",
-    contrast_preset: str = "conservative",
+    contrast_preset: str = DEFAULT_WEBSITE_CLASSIC_CONTRAST_PRESET,
 ) -> Tuple[float, List[str], List[Dict[str, Any]]]:
     """Render note chunks in parallel worker dirs, merge to staging, promote to target."""
     root = Path(repo_root)
@@ -1357,7 +1358,7 @@ def render_single_note(
     binary: Optional[Path] = None,
     cache_key: str = "",
     instrument: str = "classical",
-    contrast_preset: str = "conservative",
+    contrast_preset: str = DEFAULT_WEBSITE_CLASSIC_CONTRAST_PRESET,
 ) -> float:
     normalized = normalize_note_name(note_name)
     dur = float(duration_s if duration_s is not None else duration_for_note(normalized))
@@ -1407,7 +1408,7 @@ def build_note_library(
     priority_notes: Optional[Sequence[str]] = None,
     render_mode: Optional[str] = None,
     parallel_workers: Optional[int] = None,
-    contrast_preset: str = "conservative",
+    contrast_preset: str = DEFAULT_WEBSITE_CLASSIC_CONTRAST_PRESET,
 ) -> Dict[str, Any]:
     root = Path(repo_root or REPO_ROOT)
     cfg = load_app_stk_config(root)
@@ -2112,8 +2113,10 @@ def build_note_library_startup_command(
     render_mode: str,
     parallel_workers: int,
     priority_notes: Sequence[str],
+    contrast_preset: str = DEFAULT_WEBSITE_CLASSIC_CONTRAST_PRESET,
 ) -> List[str]:
     """Build the supported CLI for ``tools/build_app_stk_note_library.py``."""
+    preset_name, _ = resolve_classic_audible_identity_contrast(contrast_preset)
     return [
         sys.executable,
         str(script),
@@ -2133,6 +2136,8 @@ def build_note_library_startup_command(
         str(render_mode),
         "--parallel-workers",
         str(parallel_workers),
+        "--contrast-preset",
+        preset_name,
         "--priority-notes",
         *priority_notes,
     ]
@@ -2156,6 +2161,9 @@ def start_background_note_library_job(
     if mode == "batch" and parallel_workers_from_config(cfg) > 1 and APP_STK_PARALLEL_WORKERS_ENABLED:
         mode = "parallel_batch"
     worker_count = parallel_workers_from_config(cfg) if mode == "parallel_batch" else 1
+    preset_name, preset_strength = resolve_classic_audible_identity_contrast(
+        DEFAULT_WEBSITE_CLASSIC_CONTRAST_PRESET
+    )
 
     existing = read_job_status(parameter_hash, instrument)
     pid = int(existing.get("pid") or 0)
@@ -2180,6 +2188,8 @@ def start_background_note_library_job(
             "output_dir": str(preview),
             "readiness": "ready_for_app_playback",
             "fretboard_required_note_count": len(required),
+            "classic_contrast_preset": preset_name,
+            "classic_contrast_strength": preset_strength,
             **pos_fields,
         }
         write_job_status(parameter_hash, report, instrument)
@@ -2198,6 +2208,7 @@ def start_background_note_library_job(
         render_mode=mode,
         parallel_workers=worker_count,
         priority_notes=priority_notes_from_config(cfg),
+        contrast_preset=DEFAULT_WEBSITE_CLASSIC_CONTRAST_PRESET,
     )
     write_job_status(
         parameter_hash,
@@ -2211,6 +2222,8 @@ def start_background_note_library_job(
             "total_notes": len(required),
             "render_mode": mode,
             "worker_count": worker_count,
+            "classic_contrast_preset": preset_name,
+            "classic_contrast_strength": preset_strength,
         },
         instrument,
     )
@@ -2226,6 +2239,8 @@ def start_background_note_library_job(
             "elapsed_time_s": 0.0,
             "render_mode": mode,
             "worker_count": worker_count,
+            "classic_contrast_preset": preset_name,
+            "classic_contrast_strength": preset_strength,
         },
         instrument,
     )
