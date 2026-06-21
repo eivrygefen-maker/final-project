@@ -2057,6 +2057,7 @@ def _render_main_studio(
     )
 
     from components.guitar_player import guitar_player  # noqa: WPS433
+    from guitar_library import load_guitar_library  # noqa: WPS433
 
     active_payload = st.session_state.get("active_stk_player_payload") or {}
     player_validation = st.session_state.get("active_stk_player_validation") or {}
@@ -2099,7 +2100,7 @@ def _render_main_studio(
         player_payload = {"status": "hidden", "positions": [], "fingerprint": ""}
         player_key = "guitar_player_idle"
 
-    guitar_player(player=player_payload, key=player_key, height=560)
+    guitar_player(player=player_payload, library=load_guitar_library(), key=player_key, height=760)
 
     if st.session_state.get("developer_fom_mode"):
         from stk_app_ui import render_stk_diagnostics_panel  # noqa: WPS433

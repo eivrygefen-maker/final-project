@@ -34,6 +34,7 @@ else:
 def guitar_player(
     *,
     player: Optional[Dict[str, Any]] = None,
+    library: Optional[Dict[str, Any]] = None,
     key: Optional[str] = None,
     height: int = 520,
 ) -> None:
@@ -44,6 +45,7 @@ def guitar_player(
     """
     _guitar_player(
         player=player or {"status": "hidden"},
+        library=library or {"status": "missing"},
         key=key,
         default=None,
         height=height,

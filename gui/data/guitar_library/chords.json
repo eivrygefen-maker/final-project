@@ -1,0 +1,275 @@
+{
+  "schema_version": "1.0",
+  "library_id": "classical_guitar_chords_v1",
+  "instrument": {
+    "name": "Classical Guitar",
+    "tuning": ["E2", "A2", "D3", "G3", "B3", "E4"],
+    "string_order": "6_to_1"
+  },
+  "playback_defaults": {
+    "velocity": 0.78,
+    "inter_string_gap_ms": 18
+  },
+  "chords": [
+    {
+      "id": "C_major_open",
+      "name": "C Major",
+      "symbol": "C",
+      "quality": "major",
+      "difficulty": "beginner",
+      "fingering": {
+        "string_6": -1,
+        "string_5": 3,
+        "string_4": 2,
+        "string_3": 0,
+        "string_2": 1,
+        "string_1": 0
+      },
+      "notes_low_to_high": ["C3", "E3", "G3", "C4", "E4"],
+      "default_strum": {
+        "direction": "down",
+        "strings": [5, 4, 3, 2, 1]
+      }
+    },
+    {
+      "id": "G_major_open",
+      "name": "G Major",
+      "symbol": "G",
+      "quality": "major",
+      "difficulty": "beginner",
+      "fingering": {
+        "string_6": 3,
+        "string_5": 2,
+        "string_4": 0,
+        "string_3": 0,
+        "string_2": 0,
+        "string_1": 3
+      },
+      "notes_low_to_high": ["G2", "B2", "D3", "G3", "B3", "G4"],
+      "default_strum": {
+        "direction": "down",
+        "strings": [6, 5, 4, 3, 2, 1]
+      }
+    },
+    {
+      "id": "A_minor_open",
+      "name": "A Minor",
+      "symbol": "Am",
+      "quality": "minor",
+      "difficulty": "beginner",
+      "fingering": {
+        "string_6": -1,
+        "string_5": 0,
+        "string_4": 2,
+        "string_3": 2,
+        "string_2": 1,
+        "string_1": 0
+      },
+      "notes_low_to_high": ["A2", "E3", "A3", "C4", "E4"],
+      "default_strum": {
+        "direction": "down",
+        "strings": [5, 4, 3, 2, 1]
+      }
+    },
+    {
+      "id": "E_minor_open",
+      "name": "E Minor",
+      "symbol": "Em",
+      "quality": "minor",
+      "difficulty": "beginner",
+      "fingering": {
+        "string_6": 0,
+        "string_5": 2,
+        "string_4": 2,
+        "string_3": 0,
+        "string_2": 0,
+        "string_1": 0
+      },
+      "notes_low_to_high": ["E2", "B2", "E3", "G3", "B3", "E4"],
+      "default_strum": {
+        "direction": "down",
+        "strings": [6, 5, 4, 3, 2, 1]
+      }
+    },
+    {
+      "id": "D_major_open",
+      "name": "D Major",
+      "symbol": "D",
+      "quality": "major",
+      "difficulty": "beginner",
+      "fingering": {
+        "string_6": -1,
+        "string_5": -1,
+        "string_4": 0,
+        "string_3": 2,
+        "string_2": 3,
+        "string_1": 2
+      },
+      "notes_low_to_high": ["D3", "A3", "D4", "F#4"],
+      "default_strum": {
+        "direction": "down",
+        "strings": [4, 3, 2, 1]
+      }
+    },
+    {
+      "id": "D_minor_open",
+      "name": "D Minor",
+      "symbol": "Dm",
+      "quality": "minor",
+      "difficulty": "beginner",
+      "fingering": {
+        "string_6": -1,
+        "string_5": -1,
+        "string_4": 0,
+        "string_3": 2,
+        "string_2": 3,
+        "string_1": 1
+      },
+      "notes_low_to_high": ["D3", "A3", "D4", "F4"],
+      "default_strum": {
+        "direction": "down",
+        "strings": [4, 3, 2, 1]
+      }
+    },
+    {
+      "id": "A_major_open",
+      "name": "A Major",
+      "symbol": "A",
+      "quality": "major",
+      "difficulty": "beginner",
+      "fingering": {
+        "string_6": -1,
+        "string_5": 0,
+        "string_4": 2,
+        "string_3": 2,
+        "string_2": 2,
+        "string_1": 0
+      },
+      "notes_low_to_high": ["A2", "E3", "A3", "C#4", "E4"],
+      "default_strum": {
+        "direction": "down",
+        "strings": [5, 4, 3, 2, 1]
+      }
+    },
+    {
+      "id": "E_major_open",
+      "name": "E Major",
+      "symbol": "E",
+      "quality": "major",
+      "difficulty": "beginner",
+      "fingering": {
+        "string_6": 0,
+        "string_5": 2,
+        "string_4": 2,
+        "string_3": 1,
+        "string_2": 0,
+        "string_1": 0
+      },
+      "notes_low_to_high": ["E2", "B2", "E3", "G#3", "B3", "E4"],
+      "default_strum": {
+        "direction": "down",
+        "strings": [6, 5, 4, 3, 2, 1]
+      }
+    },
+    {
+      "id": "F_major_easy",
+      "name": "F Major",
+      "symbol": "F",
+      "quality": "major",
+      "difficulty": "beginner",
+      "fingering": {
+        "string_6": -1,
+        "string_5": -1,
+        "string_4": 3,
+        "string_3": 2,
+        "string_2": 1,
+        "string_1": 1
+      },
+      "notes_low_to_high": ["F3", "A3", "C4", "F4"],
+      "default_strum": {
+        "direction": "down",
+        "strings": [4, 3, 2, 1]
+      }
+    },
+    {
+      "id": "C_major_7_open",
+      "name": "C Major 7",
+      "symbol": "Cmaj7",
+      "quality": "major_7",
+      "difficulty": "beginner",
+      "fingering": {
+        "string_6": -1,
+        "string_5": 3,
+        "string_4": 2,
+        "string_3": 0,
+        "string_2": 0,
+        "string_1": 0
+      },
+      "notes_low_to_high": ["C3", "E3", "G3", "B3", "E4"],
+      "default_strum": {
+        "direction": "down",
+        "strings": [5, 4, 3, 2, 1]
+      }
+    },
+    {
+      "id": "G_dominant_7_open",
+      "name": "G Dominant 7",
+      "symbol": "G7",
+      "quality": "dominant_7",
+      "difficulty": "beginner",
+      "fingering": {
+        "string_6": 3,
+        "string_5": 2,
+        "string_4": 0,
+        "string_3": 0,
+        "string_2": 0,
+        "string_1": 1
+      },
+      "notes_low_to_high": ["G2", "B2", "D3", "G3", "B3", "F4"],
+      "default_strum": {
+        "direction": "down",
+        "strings": [6, 5, 4, 3, 2, 1]
+      }
+    },
+    {
+      "id": "A_minor_7_open",
+      "name": "A Minor 7",
+      "symbol": "Am7",
+      "quality": "minor_7",
+      "difficulty": "beginner",
+      "fingering": {
+        "string_6": -1,
+        "string_5": 0,
+        "string_4": 2,
+        "string_3": 0,
+        "string_2": 1,
+        "string_1": 0
+      },
+      "notes_low_to_high": ["A2", "E3", "G3", "C4", "E4"],
+      "default_strum": {
+        "direction": "down",
+        "strings": [5, 4, 3, 2, 1]
+      }
+    },
+    {
+      "id": "D_dominant_7_open",
+      "name": "D Dominant 7",
+      "symbol": "D7",
+      "quality": "dominant_7",
+      "difficulty": "beginner",
+      "fingering": {
+        "string_6": -1,
+        "string_5": -1,
+        "string_4": 0,
+        "string_3": 2,
+        "string_2": 1,
+        "string_1": 2
+      },
+      "notes_low_to_high": ["D3", "A3", "C4", "F#4"],
+      "default_strum": {
+        "direction": "down",
+        "strings": [4, 3, 2, 1]
+      }
+    }
+  ]
+}

@@ -368,6 +368,69 @@
       background: var(--accent);
       transition: width 0.15s ease;
     }
+    .library-panel {
+      margin-top: 14px;
+      padding: 12px;
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.045);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    .library-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 14px;
+    }
+    .library-section h3 {
+      margin: 0 0 8px;
+      font-size: 1rem;
+      font-weight: 700;
+      color: #f9fafb;
+    }
+    .chord-buttons {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .library-button,
+    .library-select {
+      font-family: inherit;
+      border-radius: 6px;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      background: var(--panel);
+      color: var(--text);
+      font-size: 0.86rem;
+    }
+    .library-button {
+      padding: 7px 11px;
+      cursor: pointer;
+    }
+    .library-button:hover:not(:disabled) {
+      border-color: var(--accent);
+      color: #fff;
+    }
+    .library-button:disabled {
+      opacity: 0.45;
+      cursor: default;
+    }
+    .library-select {
+      width: 100%;
+      padding: 7px 9px;
+      margin-bottom: 8px;
+    }
+    .melody-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .library-now {
+      min-height: 1.3em;
+      color: var(--muted);
+      font-size: 0.86rem;
+    }
+    @media (max-width: 760px) {
+      .library-grid { grid-template-columns: 1fr; }
+    }
   </style>
 </head>
 <body>
@@ -397,6 +460,23 @@
         <div class="bridge-bar" title="Bridge saddle"></div>
       </div>
       <div class="preload-bar" id="preloadBar"><div id="preloadFill"></div></div>
+      <div class="library-panel" id="libraryPanel" hidden>
+        <div class="library-grid">
+          <section class="library-section" aria-label="Chord library">
+            <h3>Chords</h3>
+            <div class="chord-buttons" id="chordButtons"></div>
+          </section>
+          <section class="library-section" aria-label="Melody library">
+            <h3>Melodies</h3>
+            <select class="library-select" id="melodySelect"></select>
+            <div class="melody-actions">
+              <button class="library-button" id="btnPlayMelody" type="button">Play Selected Melody</button>
+              <button class="library-button" id="btnRandomMelody" type="button">Play Random Melody</button>
+            </div>
+            <div class="library-now" id="libraryNow"></div>
+          </section>
+        </div>
+      </div>
     </div>
   </div>
   <script src="./streamlit_bridge.js"></script>
@@ -425,6 +505,11 @@
       var overlappingPlayback = true;
       var currentFingerprint = "";
       var currentPayloadKey = "";
+      var currentLookup = {};
+      var currentLibraryKey = "";
+      var currentMelodyId = "";
+      var lastRandomMelodyId = "";
+      var melodyTimers = [];
       var lastCell = null;
 
       function ensureAudioContext() {
@@ -536,7 +621,7 @@
 
       /** Play one note via a fresh HTMLAudioElement (overlapping / chord-friendly). */
       // OVERLAPPING_PLAYBACK_ENABLED
-      function playNoteWav(wavFile) {
+      function playNoteWav(wavFile, volume) {
         if (!wavFile || !currentFingerprint) return;
         if (!overlappingPlayback) {
           stopAllPlayback();
@@ -544,7 +629,8 @@
         var url = assetUrl(currentFingerprint, wavFile);
         var audio = new Audio(url);
         duckActiveNotes(audio);
-        audio.volume = 1.0;
+        var v = typeof volume === "number" ? volume : 1.0;
+        audio.volume = Math.max(0, Math.min(1, v));
         activeHtmlAudios.push(audio);
         pruneActiveAudios();
         audio.addEventListener("ended", function () {
@@ -555,6 +641,22 @@
           console.warn("note play failed", wavFile, err);
         });
         return audio;
+      }
+
+      function playPosition(stringNumber, fret, velocity) {
+        var key = String(stringNumber) + ":" + String(fret);
+        var p = currentLookup[key];
+        if (!p || !p.wav || !loadedWavs[p.wav]) return null;
+        var audio = playNoteWav(p.wav, velocity);
+        setNowPlaying("<strong>S" + p.string + " F" + p.fret + " Â· " + (p.note_name || p.note_id) + "</strong>");
+        return audio;
+      }
+
+      function stopMelodySequence() {
+        melodyTimers.forEach(function (timer) {
+          window.clearTimeout(timer);
+        });
+        melodyTimers = [];
       }
 
       function playPreviewWav() {
@@ -636,6 +738,7 @@
         (player.positions || []).forEach(function (p) {
           lookup[String(p.string) + ":" + String(p.fret)] = p;
         });
+        currentLookup = lookup;
 
         var neckEl = document.getElementById("neck");
         var oldStrip = neckEl.querySelector(".open-zone-strip");
@@ -711,8 +814,10 @@
       }
 
       function showIdle(message) {
+        stopMelodySequence();
         document.getElementById("idlePanel").hidden = false;
         document.getElementById("playerPanel").hidden = true;
+        document.getElementById("libraryPanel").hidden = true;
         document.getElementById("orientationLegend").hidden = true;
         if (message) document.getElementById("idlePanel").textContent = message;
         setNowPlaying("");
@@ -724,7 +829,133 @@
         document.getElementById("orientationLegend").hidden = false;
       }
 
-      function renderPlayer(player) {
+      function playablePosition(stringNumber, fret) {
+        var p = currentLookup[String(stringNumber) + ":" + String(fret)];
+        return !!(p && p.wav && loadedWavs[p.wav]);
+      }
+
+      function playChord(chord, defaults) {
+        if (!chord || !chord.fingering || !chord.default_strum) return;
+        var strings = (chord.default_strum.strings || []).slice();
+        if (chord.default_strum.direction === "up") {
+          strings.reverse();
+        }
+        var gap = Number(defaults.inter_string_gap_ms);
+        if (!Number.isFinite(gap)) gap = 18;
+        var velocity = Number(defaults.velocity);
+        if (!Number.isFinite(velocity)) velocity = 0.78;
+        strings.forEach(function (sn, index) {
+          var fret = Number(chord.fingering["string_" + sn]);
+          if (fret < 0) return;
+          window.setTimeout(function () {
+            playPosition(sn, fret, velocity);
+          }, index * gap);
+        });
+        setNowPlaying("<strong>" + (chord.symbol || chord.name || "Chord") + "</strong>");
+      }
+
+      function playMelody(melody) {
+        if (!melody || !melody.events) return;
+        stopMelodySequence();
+        var beatMs = 60000 / Math.max(1, Number(melody.tempo_bpm) || 90);
+        currentMelodyId = String(melody.id || "");
+        var title = melody.title || currentMelodyId || "Melody";
+        document.getElementById("libraryNow").textContent = "Playing: " + title;
+        setNowPlaying("<strong>" + title + "</strong>");
+        melody.events.forEach(function (event) {
+          var timer = window.setTimeout(function () {
+            var note = event[0];
+            var sn = event[1];
+            var fret = event[2];
+            var velocity = Number(event[5]);
+            playPosition(sn, fret, Number.isFinite(velocity) ? velocity : 0.78);
+            setNowPlaying("<strong>" + title + " Â· " + note + "</strong>");
+          }, Math.max(0, Number(event[3]) || 0) * beatMs);
+          melodyTimers.push(timer);
+        });
+        var endBeat = melody.events.reduce(function (maxBeat, event) {
+          return Math.max(maxBeat, (Number(event[3]) || 0) + (Number(event[4]) || 0));
+        }, 0);
+        melodyTimers.push(window.setTimeout(function () {
+          document.getElementById("libraryNow").textContent = "Last played: " + title;
+          melodyTimers = [];
+        }, endBeat * beatMs + 120));
+      }
+
+      function selectRandomMelody(melodies) {
+        if (!melodies.length) return null;
+        var pool = melodies;
+        if (melodies.length > 1 && lastRandomMelodyId) {
+          pool = melodies.filter(function (m) {
+            return String(m.id || "") !== lastRandomMelodyId;
+          });
+        }
+        var chosen = pool[Math.floor(Math.random() * pool.length)] || melodies[0];
+        lastRandomMelodyId = String(chosen.id || "");
+        return chosen;
+      }
+
+      function renderLibrary(player, library) {
+        var panel = document.getElementById("libraryPanel");
+        var chordButtons = document.getElementById("chordButtons");
+        var melodySelect = document.getElementById("melodySelect");
+        var btnPlayMelody = document.getElementById("btnPlayMelody");
+        var btnRandomMelody = document.getElementById("btnRandomMelody");
+        if (!library || library.status !== "ready") {
+          panel.hidden = true;
+          return;
+        }
+        var chordsDoc = library.chords || {};
+        var melodiesDoc = library.melodies || {};
+        var chords = chordsDoc.chords || [];
+        var melodies = melodiesDoc.melodies || [];
+        var libKey = String(player.fingerprint || "") + "|" + String(chordsDoc.library_id || "") + "|" + String(melodiesDoc.library_id || "");
+        panel.hidden = false;
+        if (libKey !== currentLibraryKey) {
+          currentLibraryKey = libKey;
+          chordButtons.innerHTML = "";
+          melodySelect.innerHTML = "";
+          chords.forEach(function (chord) {
+            var button = document.createElement("button");
+            button.type = "button";
+            button.className = "library-button";
+            button.textContent = chord.symbol || chord.name || chord.id;
+            button.title = chord.name || chord.id;
+            button.addEventListener("click", function () {
+              playChord(chord, chordsDoc.playback_defaults || {});
+            });
+            chordButtons.appendChild(button);
+          });
+          melodies.forEach(function (melody) {
+            var option = document.createElement("option");
+            option.value = String(melody.id || "");
+            option.textContent = melody.title || melody.id;
+            melodySelect.appendChild(option);
+          });
+          currentMelodyId = melodies.length ? String(melodies[0].id || "") : "";
+          document.getElementById("libraryNow").textContent = "";
+        }
+        btnPlayMelody.disabled = !melodies.length;
+        btnRandomMelody.disabled = !melodies.length;
+        btnPlayMelody.onclick = function () {
+          var id = melodySelect.value || currentMelodyId;
+          var melody = melodies.find(function (m) { return String(m.id || "") === id; }) || melodies[0];
+          if (melody) {
+            currentMelodyId = String(melody.id || "");
+            playMelody(melody);
+          }
+        };
+        btnRandomMelody.onclick = function () {
+          var melody = selectRandomMelody(melodies);
+          if (melody) {
+            currentMelodyId = String(melody.id || "");
+            melodySelect.value = currentMelodyId;
+            playMelody(melody);
+          }
+        };
+      }
+
+      function renderPlayer(player, library) {
         var status = String(player.status || "hidden").toLowerCase();
         var btnPreview = document.getElementById("btnPreview");
 
@@ -787,14 +1018,16 @@
             setNowPlaying("<strong>All notes preview</strong>");
           };
         }
+        renderLibrary(player, library);
       }
 
       function onRender(event) {
         var args = (event.detail && event.detail.args) || {};
         var player = args.player || { status: "hidden" };
-        renderPlayer(player);
+        var library = args.library || { status: "missing" };
+        renderPlayer(player, library);
         if (window.Streamlit) {
-          window.Streamlit.setFrameHeight(520);
+          window.Streamlit.setFrameHeight(760);
         }
       }
 
