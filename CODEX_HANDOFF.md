@@ -454,3 +454,15 @@ At the end of CODEX_HANDOFF.md, add:
 - Lightweight checks run: inspected `gui/app.py` `run_gmsh_fom`, inspected the geometry builder FOM branch/physical tags, read/previewed the new script and quick-start doc with `Get-Content`, and ran `git diff --check`.
 - `bash -n` was not available in the local Codex Windows environment, so shell syntax validation should be run on the VM if desired.
 - No GMSH, FEM solve, ROM, STK, WAV generation, simulations, production validation, or full test suites were run in Codex.
+
+---
+
+## Completion note - Yonatan HaKatan rhythm correction
+
+- Corrected melody entry: `yonatan_hakatan_excerpt` in `gui/data/guitar_library/melodies.json`.
+- Change type: rhythm/phrase-structure data correction only.
+- Pitch sequence now follows `G E E | F D D | C D E F | G G G / G E E | F D D | C E G G | C`.
+- Preserved current valid string/fret mappings for C4, D4, E4, F4, and G4.
+- No player logic, playback code, chord JSON, STK, cache, GMSH, ROM, or UI behavior was changed.
+- Lightweight check run: `python gui/test_guitar_library_json.py` passed.
+- No STK, WAV generation, FEM, ROM, GMSH, simulations, or heavy validation was run.
