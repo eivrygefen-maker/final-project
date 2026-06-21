@@ -1940,10 +1940,6 @@ def _render_main_studio(
         )
 
     st.markdown('<div class="gen-sound-spacer"></div>', unsafe_allow_html=True)
-    st.markdown(
-        '<p class="user-gen-sound-heading">GENERATE SOUND</p>',
-        unsafe_allow_html=True,
-    )
     st.markdown('<div class="gen-sound-block">', unsafe_allow_html=True)
     _stk_status = str(st.session_state.get("stk_job_status") or "not_started")
     _generate_requested = bool(st.session_state.get("show_clickable_guitar_requested"))
