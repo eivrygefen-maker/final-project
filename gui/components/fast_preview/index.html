@@ -1068,10 +1068,31 @@
       scene.add(sideRight);
     }
 
+    function clamp01(v) {
+      return Math.max(0, Math.min(1, v));
+    }
+
+    function smoothstep(edge0, edge1, x) {
+      const t = clamp01((x - edge0) / Math.max(edge1 - edge0, 1e-9));
+      return t * t * (3 - 2 * t);
+    }
+
+    function visualWidthScaleForPoint(x, requestedWidth, nominalLength, nominalWidth) {
+      const rawScale = num(requestedWidth, 0.37) / Math.max(num(nominalWidth, 0.37), 1e-9);
+      const lowerBlend = 1 - smoothstep(-0.12, 0.02, x);
+      const upperBlend = smoothstep(0.04, 0.18, x);
+      const waistBlend = Math.max(0, 1 - Math.max(lowerBlend, upperBlend));
+      const response = lowerBlend * 0.82 + upperBlend * 0.68 + waistBlend * 0.52;
+      const scale = 1 + (rawScale - 1) * response;
+      return Math.max(0.70, Math.min(1.16, scale));
+    }
+
     function scaleLoop(loop, L, W, nominalLength, nominalWidth) {
       const sx = num(L, 0.49) / Math.max(num(nominalLength, 0.49), 1e-9);
-      const sy = num(W, 0.37) / Math.max(num(nominalWidth, 0.37), 1e-9);
-      return loop.map(([x, y]) => [x * sx, y * sy]);
+      return loop.map(([x, y]) => [
+        x * sx,
+        y * visualWidthScaleForPoint(x, W, nominalLength, nominalWidth),
+      ]);
     }
 
   function woodColorHex(woodId) {
