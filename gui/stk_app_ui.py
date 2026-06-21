@@ -416,7 +416,7 @@ def request_generate_guitar(
         return {"action": "activated_preview", "activation": None, "already_loaded": True}
 
     if _stk_cache_is_loadable(parameter_hash, repo_root, instrument):
-        return generate_or_load_ready_guitar(
+        result = generate_or_load_ready_guitar(
             repo_root=repo_root,
             rom_fp=rom_fp,
             lhs_params=lhs_params,
@@ -426,6 +426,8 @@ def request_generate_guitar(
             rom_physical_summary_path=rom_physical_summary_path,
             instrument=instrument,
         )
+        _clear_stk_render_request()
+        return result
 
     state = resolve_preview_cache_ready_state(parameter_hash, instrument=instrument, repo_root=repo_root)
     status = str(state.get("status") or "not_started")
@@ -433,7 +435,7 @@ def request_generate_guitar(
     precedence = stk_status_precedence({**state, "preview_cache_ready": preview_ready})
 
     if precedence == "ready":
-        return generate_or_load_ready_guitar(
+        result = generate_or_load_ready_guitar(
             repo_root=repo_root,
             rom_fp=rom_fp,
             lhs_params=lhs_params,
@@ -443,6 +445,8 @@ def request_generate_guitar(
             rom_physical_summary_path=rom_physical_summary_path,
             instrument=instrument,
         )
+        _clear_stk_render_request()
+        return result
 
     if precedence == "failed":
         return {

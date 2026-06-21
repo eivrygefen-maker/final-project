@@ -28,7 +28,6 @@
     html, body {
       margin: 0;
       padding: 0;
-      min-height: 360px;
       font-family: "Source Sans 3", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       background: var(--bg);
       color: var(--text);
@@ -37,7 +36,6 @@
     .wrap {
       padding: 12px 16px 16px;
       max-width: 100%;
-      min-height: 360px;
     }
     .header {
       display: flex;
@@ -347,7 +345,6 @@
       cursor: default;
     }
     .idle {
-      min-height: 260px;
       padding: 48px 24px;
       text-align: center;
       color: var(--muted);
@@ -355,18 +352,12 @@
       line-height: 1.5;
       border: 1px dashed rgba(255, 255, 255, 0.12);
       border-radius: var(--radius);
-      display: flex;
-      align-items: center;
-      justify-content: center;
       background: rgba(255, 255, 255, 0.025);
     }
     .idle.loading {
       color: #bfdbfe;
       border-color: rgba(147, 197, 253, 0.35);
       background: rgba(59, 130, 246, 0.08);
-    }
-    #playerPanel {
-      min-height: 360px;
     }
     .preload-bar {
       height: 3px;
@@ -526,10 +517,7 @@
       var lastRandomMelodyId = "";
       var melodyTimers = [];
       var lastCell = null;
-      var lastPlayer = { status: "hidden" };
-      var lastLibrary = { status: "missing" };
       var resizeRaf = 0;
-      var resizeTimer = 0;
 
       function ensureAudioContext() {
         if (!audioCtx) {
@@ -707,6 +695,29 @@
         document.getElementById("nowPlaying").innerHTML = text || "";
       }
 
+      function updateFrameHeight() {
+        if (!window.Streamlit) return;
+        var wrap = document.querySelector(".wrap");
+        if (!wrap) return;
+        var rect = wrap.getBoundingClientRect();
+        var height = Math.ceil(
+          Math.max(
+            wrap.scrollHeight,
+            rect ? rect.height : 0,
+            120
+          )
+        );
+        window.Streamlit.setFrameHeight(height + 4);
+      }
+
+      function scheduleFrameHeightUpdate() {
+        if (resizeRaf) window.cancelAnimationFrame(resizeRaf);
+        resizeRaf = window.requestAnimationFrame(function () {
+          resizeRaf = 0;
+          updateFrameHeight();
+        });
+      }
+
       function resolveStringOrder(player) {
         if (player.string_visual_order_numbers && player.string_visual_order_numbers.length) {
           return player.string_visual_order_numbers.slice();
@@ -842,6 +853,7 @@
         document.getElementById("orientationLegend").hidden = true;
         idle.textContent = message || "Click Generate sound after Save & Sync to build the note cache and open the interactive fretboard.";
         setNowPlaying("");
+        scheduleFrameHeightUpdate();
       }
 
       function showPlayer() {
@@ -850,6 +862,7 @@
         idle.className = "idle";
         document.getElementById("playerPanel").hidden = false;
         document.getElementById("orientationLegend").hidden = false;
+        scheduleFrameHeightUpdate();
       }
 
       function playablePosition(stringNumber, fret) {
@@ -1025,14 +1038,17 @@
           }).then(function () {
             bar.classList.remove("visible");
             if (btnPreview) btnPreview.disabled = !(previewBuffer || loadedWavs["all_notes_preview.wav"]);
+            scheduleFrameHeightUpdate();
           }).catch(function (err) {
             console.error("preload failed", err);
             setStatus("Audio preload failed", "stale");
             bar.classList.remove("visible");
+            scheduleFrameHeightUpdate();
           });
         } else {
           bar.classList.remove("visible");
           if (btnPreview) btnPreview.disabled = !(previewBuffer || loadedWavs["all_notes_preview.wav"]);
+          scheduleFrameHeightUpdate();
         }
 
         if (btnPreview) {
@@ -1048,46 +1064,19 @@
         var args = (event.detail && event.detail.args) || {};
         var player = args.player || { status: "hidden" };
         var library = args.library || { status: "missing" };
-        lastPlayer = player;
-        lastLibrary = library;
         renderPlayer(player, library);
-        if (window.Streamlit) {
-          window.Streamlit.setFrameHeight(760);
-        }
-      }
-
-      function relayoutCurrentPlayer() {
-        var player = lastPlayer || { status: "hidden" };
-        var status = String(player.status || "hidden").toLowerCase();
-        if (status === "ready" && player.fingerprint) {
-          showPlayer();
-          buildFretboard(player);
-          renderLibrary(player, lastLibrary || { status: "missing" });
-        } else if (status === "building") {
-          showIdle("Building note cache...", "loading");
-        } else if (status === "hidden" || status === "missing") {
-          showIdle(null);
-        }
-        if (window.Streamlit) {
-          window.Streamlit.setFrameHeight(760);
-        }
-      }
-
-      function scheduleResizeRender() {
-        if (resizeTimer) window.clearTimeout(resizeTimer);
-        resizeTimer = window.setTimeout(function () {
-          if (resizeRaf) window.cancelAnimationFrame(resizeRaf);
-          resizeRaf = window.requestAnimationFrame(function () {
-            resizeRaf = 0;
-            relayoutCurrentPlayer();
-          });
-        }, 80);
+        scheduleFrameHeightUpdate();
       }
 
       if (window.Streamlit && window.Streamlit.events) {
         window.Streamlit.events.addEventListener(window.Streamlit.RENDER_EVENT, onRender);
       }
-      window.addEventListener("resize", scheduleResizeRender, { passive: true });
+      window.addEventListener("resize", scheduleFrameHeightUpdate, { passive: true });
+      if (window.ResizeObserver) {
+        var observer = new ResizeObserver(scheduleFrameHeightUpdate);
+        var observedWrap = document.querySelector(".wrap");
+        if (observedWrap) observer.observe(observedWrap);
+      }
     })();
   </script>
 </body>
