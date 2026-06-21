@@ -509,7 +509,7 @@ def create_guitar_mesh():
 
     # Display validation shell: uniform aesthetic lc only (decoupled from FOM refinement).
     # Preview sketch: coarse global + local zones. FOM: graded wood/air fields.
-    DISPLAY_GLOBAL_LC_M = 0.012   # 12 mm coarse display shell (PyVista validation only)
+    DISPLAY_GLOBAL_LC_M = 0.010   # 10 mm display shell (PyVista validation only)
     DISPLAY_SEAM_LC_M = 0.002     # 2 mm nodes at top/back plate perimeters only
     DISPLAY_SEAM_BAND_M = 0.001   # 1 mm Distance band (node alignment at plate seams)
     PREVIEW_GLOBAL_LC_M = 0.012   # 12 mm coarse preview shell
@@ -602,7 +602,7 @@ def create_guitar_mesh():
             flush=True,
         )
 
-    # Display: uniform 12 mm (visualization only). Preview/FOM: graded fields unchanged.
+    # Display: uniform 10 mm (visualization only). Preview/FOM: graded fields unchanged.
     if is_display:
         mesh_size = DISPLAY_GLOBAL_LC_M
         mesh_size_min = DISPLAY_GLOBAL_LC_M
@@ -617,7 +617,7 @@ def create_guitar_mesh():
         mesh_size_max = air_threshold_size_max
 
     print(
-        "DEBUG: Display mesh — 12 mm shell + 3 mm seam band; preview uses local zones; "
+        "DEBUG: Display mesh — 10 mm shell + 3 mm seam band; preview uses local zones; "
         "FOM mesh uses graded wood/air fields."
     )
     print(
