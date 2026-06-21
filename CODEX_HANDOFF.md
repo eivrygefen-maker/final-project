@@ -439,3 +439,18 @@ At the end of CODEX_HANDOFF.md, add:
 - Code/runtime behavior changed: none outside the new demo script/documentation.
 - Lightweight checks run: read/previewed the new script and quick-start doc with `Get-Content`; attempted `bash -n tools/demo_classical_sample_gmsh.sh`, but local Codex Windows environment does not have `bash` installed.
 - No GMSH, FEM, ROM, STK, WAV generation, simulations, production validation, or full test suites were run in Codex.
+
+---
+
+## Completion note - Full-FOM GMSH demo script
+
+- Files created: `tools/demo_classical_sample_fom_gmsh.sh`, `docs/DEMO_FULL_FOM_GMSH_QUICK_START.md`.
+- Existing display demo left unchanged: `tools/demo_classical_sample_gmsh.sh`.
+- Purpose: safe presenter command for opening existing Classical `sample_000` through the repository's real full-FOM GMSH path.
+- FOM path used: script runs `FEM/geometry/build_3d_guitar.py` with `FEM_ALLOW_FOM=1` and a temp `FEM_MESH_OUT`, matching the real FOM branch rather than the display branch.
+- Safety behavior: script works in a temporary `/tmp` demo folder, copies only needed geometry assets there, writes the demo config and full FOM mesh only there, opens GMSH on that temporary mesh, and cleans the temporary folder on exit/Ctrl+C where practical.
+- Active website state untouched: script never writes `FEM/configs/guitar_3d.json`, `FEM/mesh/display_mesh.msh`, active caches, ROM/STK/audio outputs, or website runtime state.
+- Code/runtime behavior changed: none outside the new demo script/documentation.
+- Lightweight checks run: inspected `gui/app.py` `run_gmsh_fom`, inspected the geometry builder FOM branch/physical tags, read/previewed the new script and quick-start doc with `Get-Content`, and ran `git diff --check`.
+- `bash -n` was not available in the local Codex Windows environment, so shell syntax validation should be run on the VM if desired.
+- No GMSH, FEM solve, ROM, STK, WAV generation, simulations, production validation, or full test suites were run in Codex.
