@@ -2,45 +2,52 @@
 
 ## Files changed
 - `gui/app.py`
-- `gui/stk_app_ui.py`
 - `gui/components/guitar_player/index.html`
 - `gui/components/fast_preview/index.html`
 - `CODEX_HANDOFF.md`
 
-## Sound/Generate cleanup
-- Kept one blue preparation message:
-  `Building guitar sound with STK... This may take a few minutes.`
-- Removed duplicate blue auto-load wording:
-  `The player will load automatically when ready.`
-- Removed:
-  `Sound is preparing in the background. Click Generate Sound when you want to open the player.`
-- Removed saving/comparison-stack wording from Generate responses and button help.
-- Replaced Step 3 guidance with:
-  `Click Generate Sound to open and play your guitar. If the sound is still preparing, the player will appear automatically when it is ready.`
-- Generate Sound behavior is unchanged.
+## Gmsh display default
+- Default view is now clean material view with mesh edges off.
+- Added compact checkbox: `Show Engineering Mesh`.
+- Checkbox only toggles PyVista `show_edges` and viewer key; it does not touch FEM/ROM/STK state.
+- Current display geometry is unchanged.
 
-## Guitar Player cleanup
-- Removed the `Ready · 44 notes` status badge from the player header.
-- Removed the `Play all notes preview` button.
-- Added null guards for the removed status/button elements.
-- Clickable fretboard behavior, note aliases, cache paths, preloading, and audio playback logic were not changed.
-- Space below/around the fretboard is now cleaner for future melody/chord controls.
+## Display mesh density
+- Display mesh density remained unchanged.
+- No Gmsh/display/FEM mesh generation settings were modified.
+- No solver mesh or physics mesh settings were touched.
 
-## Design Studio cleanup
-- Removed `User (ROM)` label.
-- Removed subtitle:
-  `ROM/LHS parameters only — instant Three.js preview. Save & Sync pushes to Gmsh/PyVista.`
-- Kept the `Design Studio` title and all active design controls.
-- No parameter sliders/selectors were removed.
+## Seam/material coloring
+- `display_mesh.msh` physical triangle tags are preserved into PyVista cell data.
+- Flat per-cell colors now prefer physical groups:
+  top, back, ribs/seam, and soundhole.
+- If tags are unavailable, the previous spatial top/back fallback still applies.
+- Clean view uses flat cell coloring and no triangle edge overlay.
 
-## CLASSIC-only / Recent status
-- CLASSIC-only behavior remains unchanged.
-- No BOX/ACOUSTIC UI option was reintroduced.
-- No Recent Guitars UI or load flow was added.
+## Generate area cleanup
+- Removed the `GENERATE SOUND` heading above the button.
+- Generate Sound button text and behavior are unchanged.
+
+## Typography
+- Main Streamlit step headings increased from `3.6rem` to `4.15rem`.
+- Design Studio title increased from `1.25rem` to `1.44rem`.
+- Guitar Player title increased from `2.75rem` to `3.16rem`.
+- Body text and controls were not intentionally enlarged.
+
+## STK loading spinner
+- Added a local CSS-only spinner in `gui/components/guitar_player/index.html`.
+- Spinner appears only for existing `player.status == "building"`.
+- It displays beside `Building note cache...`.
+- No Streamlit polling, rerun, audio, cache, or player behavior changed.
+
+## Confirmations
+- CLASSIC-only remains unchanged.
+- No Recent Guitars were added.
+- No FEM/ROM/STK physics, dimensions, cache generation, or player audio behavior changed.
 
 ## Lightweight checks run
 - `python -m py_compile gui\app.py gui\stk_app_ui.py`
-- Removed-text scan for the requested labels/messages.
+- Text scan for removed `GENERATE SOUND` heading and old player labels.
 - `git diff --check`
 
 ## VM verification steps
@@ -49,8 +56,9 @@ git pull
 python -m py_compile gui/app.py gui/stk_app_ui.py
 python -m streamlit run gui/app.py --server.headless true --server.port 8501
 ```
-- Open the website and confirm Design Studio shows only title + controls.
-- Save & Sync, then confirm no background preparation caption appears before Generate.
-- Click Generate Sound while STK is preparing; confirm only one blue prep message appears.
-- Confirm the player has no `Ready · 44 notes` label and no `Play all notes preview` button.
-- Confirm clicking fretboard notes still plays from the current cache.
+- Save & Sync a guitar and inspect the full model.
+- Confirm default Gmsh view has no triangle edges.
+- Toggle `Show Engineering Mesh` and confirm edges appear/disappear only visually.
+- Confirm top/back/ribs/soundhole colors are clean and not blended by triangles.
+- Confirm `GENERATE SOUND` heading is gone but the button remains.
+- Click Generate while STK is building and confirm the small spinner appears with `Building note cache...`.

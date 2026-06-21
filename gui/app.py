@@ -94,6 +94,10 @@ from components.fast_preview import fast_preview  # noqa: E402
 TOP_Z_BAND_FRAC = 0.10
 HOLE_VIS_COLOR = "#0c0c0c"
 SHELL_VIS_TAGS = frozenset({1, 2, 3, 4})
+SHELL_TAG_TOP = 1
+SHELL_TAG_SOUNDHOLE = 2
+SHELL_TAG_BACK = 3
+SHELL_TAG_RIBS = 4
 DEFAULT_STK_NOTE_HZ = 110.0
 FIXTURE_PRESETS = (
     "Standing Angled (3D)",
@@ -513,21 +517,11 @@ def inject_user_flow_css() -> None:
         """
         <style>
         .user-step-heading {
-            font-size: 3.6rem;
+            font-size: 4.15rem;
             font-weight: 800;
             letter-spacing: 0.04em;
             line-height: 1.08;
             margin: 1.25rem 0 0.65rem 0;
-            color: #ffffff;
-            text-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
-        }
-        .user-gen-sound-heading {
-            font-size: 3.2rem;
-            font-weight: 800;
-            letter-spacing: 0.04em;
-            line-height: 1.1;
-            margin: 1.5rem 0 0.75rem 0;
-            text-align: center;
             color: #ffffff;
             text-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
         }
@@ -1106,13 +1100,18 @@ def load_surface_mesh(msh_path: Path) -> Optional[Any]:
         points = np.asarray(msh.points, dtype=np.float64)
         tri = np.asarray(tri, dtype=np.int64)
         phys = msh.cell_data_dict.get("gmsh:physical")
+        kept_tags: Optional[np.ndarray] = None
         if phys is not None and "triangle" in phys:
             tags = np.asarray(phys["triangle"], dtype=np.int32).ravel()
-            tri = tri[np.isin(tags, list(SHELL_VIS_TAGS))]
+            keep = np.isin(tags, list(SHELL_VIS_TAGS))
+            tri = tri[keep]
+            kept_tags = tags[keep]
         if tri.shape[0] < 3:
             return None
         faces = np.hstack([np.full((tri.shape[0], 1), 3, dtype=np.int64), tri]).ravel()
         poly = pv.PolyData(points, faces)
+        if kept_tags is not None and len(kept_tags) == poly.n_cells:
+            poly.cell_data["physical_tag"] = kept_tags
         poly.compute_normals(
             cell_normals=False,
             point_normals=True,
@@ -1127,7 +1126,7 @@ def load_surface_mesh(msh_path: Path) -> Optional[Any]:
         return None
 
 
-def apply_spatial_colormap(
+def apply_material_colormap(
     mesh: Any,
     *,
     top_color: str,
@@ -1135,15 +1134,23 @@ def apply_spatial_colormap(
     body_length: float,
     hole_radius: float,
 ) -> Any:
-    centers = mesh.cell_centers().points
-    z = centers[:, 2]
-    zmax, zmin = float(np.max(z)), float(np.min(z))
-    top_z = zmax - TOP_Z_BAND_FRAC * max(zmax - zmin, 1e-9)
     top_rgb = np.array(hex_to_rgb01(top_color), dtype=np.float32)
     back_rgb = np.array(hex_to_rgb01(back_color), dtype=np.float32)
-    is_top = z >= top_z
+    rib_rgb = np.clip(back_rgb * 0.72 + np.array([0.08, 0.045, 0.018], dtype=np.float32), 0.0, 1.0)
+    hole_rgb = np.array(hex_to_rgb01(HOLE_VIS_COLOR), dtype=np.float32)
     colors = np.tile(back_rgb, (mesh.n_cells, 1))
-    colors[is_top] = top_rgb
+    tags = np.asarray(mesh.cell_data.get("physical_tag", []), dtype=np.int32).ravel()
+    if tags.size == mesh.n_cells:
+        colors[tags == SHELL_TAG_TOP] = top_rgb
+        colors[tags == SHELL_TAG_BACK] = back_rgb
+        colors[tags == SHELL_TAG_RIBS] = rib_rgb
+        colors[tags == SHELL_TAG_SOUNDHOLE] = hole_rgb
+    else:
+        centers = mesh.cell_centers().points
+        z = centers[:, 2]
+        zmax, zmin = float(np.max(z)), float(np.min(z))
+        top_z = zmax - TOP_Z_BAND_FRAC * max(zmax - zmin, 1e-9)
+        colors[z >= top_z] = top_rgb
     out = mesh.copy(deep=True)
     out.cell_data["rgb"] = colors
     return out
@@ -1173,7 +1180,7 @@ def render_guitar(
     plotter = pv.Plotter(window_size=[1100, 620], lighting="three lights")
     plotter.background_color = "#f4f4f9"
     if mesh is not None and mesh.n_cells > 0:
-        colored = apply_spatial_colormap(
+        colored = apply_material_colormap(
             mesh,
             top_color=top_color,
             back_color=back_color,
@@ -1187,9 +1194,9 @@ def render_guitar(
             rgb=True,
             preference="cell",
             show_edges=edges_on,
-            edge_color="#3d2817" if sketch_mode else "#2c3e50",
-            line_width=0.8 if sketch_mode else 1.0,
-            smooth_shading=not sketch_mode,
+            edge_color="#3d2817" if sketch_mode else "#203040",
+            line_width=0.8 if sketch_mode else 0.55,
+            smooth_shading=False,
         )
     else:
         plotter.add_text("Preview unavailable", position="upper_left", font_size=12)
@@ -1245,6 +1252,12 @@ def render_validation_mesh_viewport(
         dm = load_surface_mesh(DISPLAY_MESH_FILE)
         n_cells = f"{dm.n_cells:,} triangles" if dm is not None else "—"
         st.caption(f"`display_mesh.msh` · {n_cells} · source: {mesh_src or 'display_mesh.msh'}")
+        show_engineering_mesh = st.checkbox(
+            "Show Engineering Mesh",
+            value=bool(st.session_state.get("show_engineering_mesh", False)),
+            key="show_engineering_mesh",
+            help="Display-only triangle edge overlay; does not affect solver meshes or audio.",
+        )
         try:
             try:
                 _import_pyvista().set_jupyter_backend("static")
@@ -1257,9 +1270,9 @@ def render_validation_mesh_viewport(
                 body_length=geom["length"],
                 hole_radius=geom["hole_radius"],
                 sketch_mode=False,
-                plot_key=f"display_{mesh_src}_{geom_fp[:12]}",
+                plot_key=f"display_{mesh_src}_{geom_fp[:12]}_{int(show_engineering_mesh)}",
                 fixture_preset=fixture_preset,
-                show_mesh_edges=True,
+                show_mesh_edges=show_engineering_mesh,
             )
         except Exception as exc:
             st.warning(f"Render error: {exc}")
@@ -1940,10 +1953,6 @@ def _render_main_studio(
         )
 
     st.markdown('<div class="gen-sound-spacer"></div>', unsafe_allow_html=True)
-    st.markdown(
-        '<p class="user-gen-sound-heading">GENERATE SOUND</p>',
-        unsafe_allow_html=True,
-    )
     st.markdown('<div class="gen-sound-block">', unsafe_allow_html=True)
     _stk_status = str(st.session_state.get("stk_job_status") or "not_started")
     _generate_requested = bool(st.session_state.get("show_clickable_guitar_requested"))
