@@ -1955,17 +1955,14 @@ def _render_main_studio(
         "not_started",
         "waiting_for_rom",
     ):
-        st.caption(
-            "Building guitar sound with STK… This may take a few minutes. "
-            "The player will load automatically when ready."
-        )
+        st.info("Building guitar sound with STK... This may take a few minutes.")
     elif not _generate_requested and _stk_status in (
         "not_started",
         "stale",
         "running",
         "partial_ready",
     ):
-        st.caption("Sound is preparing in the background. Click **Generate Sound** when you want to open the player.")
+        pass
     else:
         from stk_app_audio_service import user_facing_stk_status  # noqa: WPS433
 
@@ -1978,7 +1975,7 @@ def _render_main_studio(
             use_container_width=True,
             disabled=not rom_body_response_ready(rom_fp),
             key="btn_gen_sound",
-            help="Save this guitar when sound is ready and open the interactive player.",
+            help="Open the interactive player when sound is ready.",
         )
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -1999,21 +1996,17 @@ def _render_main_studio(
                     rom_physical_summary_path=str(st.session_state.get("stk_body_json") or ""),
                 )
                 if result.get("action") in ("stk_started", "stk_running"):
-                    st.info(
-                        "Building guitar sound with STK… This may take a few minutes. "
-                        "The player will load automatically when ready."
-                    )
+                    st.info("Building guitar sound with STK... This may take a few minutes.")
                 elif result.get("action") == "loaded_existing":
-                    st.info("This guitar is already saved — loaded from comparison stack.")
+                    st.info("Guitar sound is ready.")
                 elif result.get("action") in ("activated_preview", "saved_new"):
                     st.success("Guitar sound is ready — play notes on the guitar below.")
                 else:
-                    name = str((result.get("entry") or {}).get("display_name") or "guitar")
-                    st.success(f"Saved **{name}** — play notes on the guitar below.")
+                    st.success("Guitar sound is ready — play notes on the guitar below.")
             except RuntimeError as exc:
                 st.warning(str(exc))
             except Exception as exc:
-                st.error(f"Could not save guitar: {exc}")
+                st.error(f"Could not open guitar player: {exc}")
 
     st.session_state["_stk_watch_ctx"] = {
         "rom_fp": rom_fp,
@@ -2066,8 +2059,8 @@ def _render_main_studio(
     _render_step_heading(
         3,
         "LISTEN TO YOUR GUITAR",
-        "After sound is ready, click <strong>Generate Sound</strong> to save your guitar and play notes "
-        "on the interactive fretboard below.",
+        "Click <strong>Generate Sound</strong> to open and play your guitar. If the sound is still preparing, "
+        "the player will appear automatically when it is ready.",
     )
 
     from components.guitar_player import guitar_player  # noqa: WPS433
@@ -2088,9 +2081,7 @@ def _render_main_studio(
     )
     if _stk_building:
         with st.spinner("Building guitar sound with STK…"):
-            st.caption(
-                "This may take a few minutes. The player will load automatically when ready."
-            )
+            pass
     if _player_ready:
         if player_validation and not player_validation.get("ok"):
             st.warning(

@@ -374,7 +374,6 @@
   <div class="wrap">
     <div class="header">
       <h2>Guitar Player</h2>
-      <span id="statusBadge" class="status">—</span>
     </div>
     <div id="nowPlaying" class="now-playing"></div>
     <p id="orientationLegend" class="orientation-legend" hidden>
@@ -398,9 +397,6 @@
         <div class="bridge-bar" title="Bridge saddle"></div>
       </div>
       <div class="preload-bar" id="preloadBar"><div id="preloadFill"></div></div>
-      <div class="toolbar">
-        <button type="button" class="secondary" id="btnPreview" disabled>Play all notes preview</button>
-      </div>
     </div>
   </div>
   <script src="./streamlit_bridge.js"></script>
@@ -581,6 +577,7 @@
 
       function setStatus(text, cls) {
         var el = document.getElementById("statusBadge");
+        if (!el) return;
         el.textContent = text;
         el.className = "status " + (cls || "");
       }
@@ -758,10 +755,10 @@
         overlappingPlayback = OVERLAPPING_PLAYBACK_ENABLED && player.enable_overlapping_playback !== false;
         enable_overlapping_playback = overlappingPlayback;
         showPlayer();
-        setStatus("Ready · " + (player.unique_note_count || "?") + " notes", "ready");
+        setStatus("", "ready");
         buildFretboard(player);
 
-        btnPreview.disabled = true;
+        if (btnPreview) btnPreview.disabled = true;
         var bar = document.getElementById("preloadBar");
         var fill = document.getElementById("preloadFill");
         bar.classList.add("visible");
@@ -773,7 +770,7 @@
             fill.style.width = Math.round(frac * 100) + "%";
           }).then(function () {
             bar.classList.remove("visible");
-            btnPreview.disabled = !(previewBuffer || loadedWavs["all_notes_preview.wav"]);
+            if (btnPreview) btnPreview.disabled = !(previewBuffer || loadedWavs["all_notes_preview.wav"]);
           }).catch(function (err) {
             console.error("preload failed", err);
             setStatus("Audio preload failed", "stale");
@@ -781,13 +778,15 @@
           });
         } else {
           bar.classList.remove("visible");
-          btnPreview.disabled = !(previewBuffer || loadedWavs["all_notes_preview.wav"]);
+          if (btnPreview) btnPreview.disabled = !(previewBuffer || loadedWavs["all_notes_preview.wav"]);
         }
 
-        btnPreview.onclick = function () {
-          playPreviewWav();
-          setNowPlaying("<strong>All notes preview</strong>");
-        };
+        if (btnPreview) {
+          btnPreview.onclick = function () {
+            playPreviewWav();
+            setNowPlaying("<strong>All notes preview</strong>");
+          };
+        }
       }
 
       function onRender(event) {

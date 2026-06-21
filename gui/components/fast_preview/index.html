@@ -267,8 +267,6 @@
   <div class="studio">
     <aside class="panel panel-controls studio-panel" id="controls">
       <h3>Design Studio</h3>
-      <p class="sub">ROM/LHS parameters only — instant Three.js preview. Save &amp; Sync pushes to Gmsh/PyVista.</p>
-      <div class="mode-pill" id="modeLabel">User (ROM)</div>
 
       <!-- BOX and ACOUSTIC are experimental and frozen for now; the website
            opens directly on the validated CLASSIC guitar. -->
@@ -1468,7 +1466,8 @@
 
   function updateModeUi() {
     const admin = state.gui_mode === "admin";
-    document.getElementById("modeLabel").textContent = admin ? "Admin (FEM)" : "User (ROM)";
+    const modeLabel = document.getElementById("modeLabel");
+    if (modeLabel) modeLabel.textContent = "";
     const btnFem = document.getElementById("btnFem");
     if (btnFem) btnFem.style.display = admin ? "block" : "none";
   }

@@ -390,10 +390,7 @@ def render_stk_render_watch_panel(
     elif action == "stk_load_failed":
         st.error(str(result.get("error") or "Could not load guitar player."))
     elif action == "stk_running":
-        st.info(
-            "Building guitar sound with STK… This may take a few minutes. "
-            "The player will load automatically when ready."
-        )
+        pass
     return result if action else None
 
 
