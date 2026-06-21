@@ -8,7 +8,7 @@
   },
   "playback_defaults": {
     "velocity": 0.78,
-    "inter_string_gap_ms": 18
+    "inter_string_gap_ms": 4
   },
   "chords": [
     {
